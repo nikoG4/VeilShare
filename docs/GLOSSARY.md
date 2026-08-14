@@ -1,0 +1,28 @@
+# Glosario
+
+- **Vault**: bóveda cifrada lógica.
+- **Real/Decoy**: roles de UX. No deben almacenarse como etiquetas en claro.
+- **VaultKey (VK)**: clave aleatoria principal de una bóveda.
+- **KEK**: Key Encryption Key derivada del PIN mediante KDF.
+- **FileKey (FK)**: clave aleatoria única por archivo.
+- **Wrap**: cifrar una clave con otra clave.
+- **AEAD**: cifrado autenticado con datos asociados.
+- **KDF**: derivación de clave desde material de entrada.
+- **Argon2id**: KDF memory-hard preferida para PIN/password.
+- **Identity key**: claves persistentes que representan una instalación.
+- **Ephemeral key**: clave generada por sesión.
+- **Fingerprint**: hash/representación estable de una clave pública.
+- **Reference code**: forma corta para localizar un peer; no equivale a autenticación.
+- **Pinned contact**: contacto cuyo fingerprint completo quedó guardado localmente.
+- **Signaling**: intercambio de información para establecer P2P.
+- **STUN**: ayuda a descubrir direccionamiento NAT.
+- **TURN**: relay de paquetes cuando P2P directo no es posible.
+- **Transport**: mecanismo que lleva frames/chunks.
+- **Protocol**: significado de los frames; no depende del transport.
+- **Chunk**: segmento de archivo cifrado y autenticado.
+- **Resume token/state**: estado local que permite continuar una transferencia.
+- **commonMain-first**: regla de diseñar contrato/comportamiento común y aislar plataformas.
+- **AdaptiveKt**: toolkit alpha de UI adaptativa para Compose Multiplatform.
+- **SecretStore**: interfaz para claves/secretos protegidos por OS.
+- **BlobStore**: almacenamiento de blobs opacos cifrados.
+- **Manifest**: metadata cifrada que describe un archivo/bóveda.

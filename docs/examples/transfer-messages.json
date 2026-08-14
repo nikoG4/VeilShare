@@ -1,0 +1,26 @@
+{
+  "note": "Ejemplos diagnósticos; no definen la codificación canónica firmada.",
+  "messages": [
+    {
+      "v": 1,
+      "type": "TRANSFER_OFFER",
+      "transferId": "t_01",
+      "fileCount": 2,
+      "totalBytes": 930123123
+    },
+    {
+      "v": 1,
+      "type": "CHUNK",
+      "transferId": "t_01",
+      "fileId": "f_aa",
+      "chunkIndex": 412,
+      "ciphertext": "<binary>"
+    },
+    {
+      "v": 1,
+      "type": "ACK",
+      "transferId": "t_01",
+      "ranges": [[0,412],[414,900]]
+    }
+  ]
+}

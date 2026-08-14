@@ -1,0 +1,30 @@
+# Gradle/Kotlin generated state
+.gradle/
+.kotlin/
+**/build/
+
+# Machine-local Android configuration
+local.properties
+
+# IDE and OS-local state
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Runtime/test vault material and logs
+**/.veilshare-runtime/
+**/test-vaults/
+*.log
+
+# Local credentials/signing material
+.env
+.env.*
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# Emulator/runtime exports (checked synthetic interop fixtures live under test resources)
+*.avd/
+**/runtime-vaults/

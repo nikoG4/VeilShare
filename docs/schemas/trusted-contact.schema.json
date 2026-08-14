@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trusted Contact Logical Schema",
+  "type": "object",
+  "required": [
+    "id",
+    "alias",
+    "referenceCode",
+    "identityFingerprint",
+    "verification"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "alias": {
+      "type": "string"
+    },
+    "referenceCode": {
+      "type": "string"
+    },
+    "identityFingerprint": {
+      "type": "string"
+    },
+    "verification": {
+      "enum": [
+        "UNVERIFIED",
+        "TOFU",
+        "QR_VERIFIED",
+        "MANUALLY_VERIFIED"
+      ]
+    },
+    "publicIdentity": {
+      "type": "string",
+      "description": "Canonical encoded public identity"
+    }
+  }
+}

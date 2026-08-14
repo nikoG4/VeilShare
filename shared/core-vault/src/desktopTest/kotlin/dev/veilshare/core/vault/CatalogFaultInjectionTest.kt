@@ -1,0 +1,10 @@
+package dev.veilshare.core.vault
+
+import dev.veilshare.core.crypto.*
+import dev.veilshare.core.model.VaultId
+import java.nio.file.Files
+import kotlinx.coroutines.test.runTest
+import kotlin.test.*
+
+class CatalogFaultInjectionTest { @Test fun `temp and pre replace failures retain authoritative old catalog after restart`()=runTest { listOf(CatalogFaultPoint.BeforeTempWrite,CatalogFaultPoint.TempWrittenBeforeReplace,CatalogFaultPoint.BeforeReplace).forEach { point -> val root=Files.createTempDirectory("veil-cat-fault-");val c=DesktopProductionCrypto.create();val key=VaultKeyGenerator(c.random).generate();val id=VaultId("abcdef0123456789");val crypto=CatalogCrypto(DesktopProductionCrypto.keyDeriver(),c.cipher);val base=DesktopEncryptedCatalogStore(root,id,crypto);base.createEmpty(key);val faulty=DesktopEncryptedCatalogStore(root,id,crypto,fault={if(it==point)throw IllegalStateException("fault")});assertFailsWith<IllegalStateException>{faulty.replaceAtomically(key,CatalogSnapshot(entries=listOf(VaultItem.Directory(VaultItemId("new"),null,"new"))))};val reopened=DesktopEncryptedCatalogStore(root,id,CatalogCrypto(DesktopProductionCrypto.keyDeriver(),c.cipher));assertTrue(reopened.load(key).entries.isEmpty());key.material.close() } }
+ @Test fun `post replace error leaves new authenticated catalog authoritative`()=runTest { val root=Files.createTempDirectory("veil-cat-after-");val c=DesktopProductionCrypto.create();val key=VaultKeyGenerator(c.random).generate();val id=VaultId("abcdef0123456789");val crypto=CatalogCrypto(DesktopProductionCrypto.keyDeriver(),c.cipher);val base=DesktopEncryptedCatalogStore(root,id,crypto);base.createEmpty(key);val faulty=DesktopEncryptedCatalogStore(root,id,crypto,fault={if(it==CatalogFaultPoint.ReplaceComplete)throw IllegalStateException("after")});assertFailsWith<IllegalStateException>{faulty.replaceAtomically(key,CatalogSnapshot(entries=listOf(VaultItem.Directory(VaultItemId("new"),null,"new"))))};assertEquals("new",DesktopEncryptedCatalogStore(root,id,crypto).load(key).entries.single().displayName);key.material.close() } }

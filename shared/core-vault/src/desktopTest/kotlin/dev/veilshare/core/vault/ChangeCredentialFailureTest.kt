@@ -1,0 +1,10 @@
+package dev.veilshare.core.vault
+
+import dev.veilshare.core.crypto.*
+import java.nio.file.Files
+import kotlinx.coroutines.test.runTest
+import kotlin.test.*
+
+class ChangeCredentialFailureTest { @Test fun `failed slot replacement retains old credential`()=runTest { val root=Files.createTempDirectory("veil-pin-fail-");val c=DesktopProductionCrypto.create();val p=Argon2Policy(Argon2Parameters(8192,1,1));val w=FailureWrapper(c.cipher);val slots=DesktopVaultSlotStore(root);CreateVaultSetUseCase(slots,c.random,c.passwordKdf,w,c.cipher,p,DesktopVaultCatalogBootstrap(root,DesktopProductionCrypto.keyDeriver(),c.cipher)).create(SensitiveChars("111111".toCharArray()),SensitiveChars("222222".toCharArray()));val original=assertIs<UnlockResult.Success>(UnlockVaultUseCase(slots,c.passwordKdf,w,c.cipher,p).unlock(SensitiveChars("111111".toCharArray()))).session;val ns=original.descriptor.blobNamespace;assertFailsWith<IllegalStateException>{ChangeCredentialUseCase(FailingSlotStore(slots),c.random,c.passwordKdf,w,p).change(original,SensitiveChars("999999".toCharArray()))};original.close();val fresh=UnlockVaultUseCase(DesktopVaultSlotStore(root),c.passwordKdf,w,c.cipher,p);val reopened=assertIs<UnlockResult.Success>(fresh.unlock(SensitiveChars("111111".toCharArray()))).session;assertEquals(ns,reopened.descriptor.blobNamespace);reopened.close();assertIs<UnlockResult.InvalidCredential>(fresh.unlock(SensitiveChars("999999".toCharArray()))) } }
+private class FailingSlotStore(private val delegate:VaultSlotStore):VaultSlotStore {override suspend fun write(slotId:String,slot:VaultBootstrapSlot){throw IllegalStateException("injected slot replacement failure")};override suspend fun all()=delegate.all()}
+private class FailureWrapper(private val c:AuthenticatedCipher):KeyWrapper {override suspend fun wrap(kek:KeyEncryptionKey,vaultKey:VaultKey,aad:ByteArray)=c.seal(kek.material,vaultKey.material.copy(),aad);override suspend fun unwrap(kek:KeyEncryptionKey,wrapped:SealedBytes,aad:ByteArray)=VaultKey(SensitiveBytes(c.open(kek.material,wrapped,aad)))}

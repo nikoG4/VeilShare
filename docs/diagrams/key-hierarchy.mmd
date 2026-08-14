@@ -1,0 +1,11 @@
+flowchart TD
+  PIN1[PIN A] --> KDF1[Argon2id]
+  PIN2[PIN B] --> KDF2[Argon2id]
+  KDF1 --> W1[unwrap Slot A]
+  KDF2 --> W2[unwrap Slot B]
+  W1 --> VK1[VaultKey A]
+  W2 --> VK2[VaultKey B]
+  VK1 --> F1[FileKeys A]
+  VK2 --> F2[FileKeys B]
+  VK1 --> M1[Manifest/Index keys A]
+  VK2 --> M2[Manifest/Index keys B]

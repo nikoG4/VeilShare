@@ -1,0 +1,23 @@
+sequenceDiagram
+  participant A as Sender
+  participant S as Ktor Signaling
+  participant B as Receiver
+  A->>S: auth signed challenge
+  B->>S: auth signed challenge
+  A->>S: lookup B
+  S-->>A: B online/public identity
+  A->>S: WebRTC offer
+  S->>B: forward offer
+  B->>S: answer
+  S->>A: forward answer
+  A->>B: transport established
+  A->>B: signed E2E hello
+  B->>A: signed E2E accept
+  A->>B: encrypted transfer offer
+  B->>A: accept
+  loop chunks
+    A->>B: encrypted chunk
+    B->>A: ACK durable
+  end
+  A->>B: complete
+  B->>A: verified receipt

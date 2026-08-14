@@ -1,0 +1,20 @@
+veilshare/
+├─ settings.gradle.kts
+├─ gradle/libs.versions.toml
+├─ shared/
+│  ├─ core-model/
+│  ├─ core-crypto/
+│  ├─ core-vault/
+│  ├─ core-identity/
+│  ├─ core-transfer/
+│  ├─ core-contacts/
+│  ├─ core-platform/
+│  ├─ ui-design/
+│  ├─ ui-features/
+│  └─ app/
+├─ androidApp/
+├─ desktopApp/
+├─ iosApp/
+├─ server/signaling/
+├─ docs/
+└─ test-vectors/

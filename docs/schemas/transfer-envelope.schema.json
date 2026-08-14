@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VeilShare Transfer Envelope (diagnostic model, not canonical signed encoding)",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "transferId",
+    "sequence"
+  ],
+  "properties": {
+    "v": {
+      "type": "integer",
+      "const": 1
+    },
+    "type": {
+      "type": "string"
+    },
+    "transferId": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": {
+      "type": "string",
+      "description": "Base64 only for diagnostic JSON. Production wire format should use binary/canonical encoding."
+    }
+  },
+  "additionalProperties": false
+}

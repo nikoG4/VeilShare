@@ -1,0 +1,31 @@
+openapi: 3.1.0
+info:
+  title: VeilShare Signaling Auxiliary HTTP API
+  version: 0.1.0
+  description: >
+    HTTP endpoints only. Real signaling is WebSocket. No file upload endpoint exists by design.
+paths:
+  /v1/health:
+    get:
+      responses:
+        "200":
+          description: Healthy
+  /v1/turn-credentials:
+    post:
+      description: Issue short-lived TURN credentials after authenticated proof/session.
+      responses:
+        "200":
+          description: Temporary credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username: { type: string }
+                  credential: { type: string }
+                  ttlSeconds: { type: integer }
+                  urls:
+                    type: array
+                    items: { type: string }
+        "401":
+          description: Not authenticated

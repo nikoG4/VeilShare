@@ -1,0 +1,18 @@
+flowchart TB
+  UI[Compose UI / AdaptiveKt wrapper] --> UC[Presentation/use cases commonMain]
+  UC --> V[Vault core: slots, catalog, journal]
+  V --> B[BlobStore contract]
+  B --> D[DesktopBlobStore desktopMain]
+  UC --> T[Transfer Core]
+  UC --> C[Contacts/Identity]
+  V --> CR[Crypto contracts: KDF/AEAD/wrapping]
+  T --> CR
+  T --> PT[PeerTransport Contract]
+  UC --> PC[Platform Capabilities]
+  PC --> A[androidMain]
+  PC --> I[iosMain]
+  PC --> D[desktopMain]
+  PT --> A
+  PT --> I
+  PT --> D
+  T --> S[Ktor Signaling]
