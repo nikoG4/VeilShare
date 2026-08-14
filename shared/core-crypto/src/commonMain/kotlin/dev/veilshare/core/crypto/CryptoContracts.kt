@@ -38,6 +38,14 @@ data class SealedBytes(val nonce: Nonce, val ciphertext: ByteArray)
 interface AuthenticatedCipher { suspend fun seal(key: SensitiveBytes, plaintext: ByteArray, aad: ByteArray = ByteArray(0)): SealedBytes; suspend fun sealWithNonce(key: SensitiveBytes, nonce: Nonce, plaintext: ByteArray, aad: ByteArray = ByteArray(0)): SealedBytes; suspend fun open(key: SensitiveBytes, sealed: SealedBytes, aad: ByteArray = ByteArray(0)): ByteArray }
 object ChunkNonce { fun from(prefix: UInt, index: ULong): Nonce { require(index != ULong.MAX_VALUE); val bytes=ByteArray(12); fun put(value:ULong, start:Int, count:Int){for(i in 0 until count) bytes[start+i]=(value shr (8*(count-1-i))).toByte()}; put(prefix.toULong(),0,4); put(index,4,8); return Nonce(bytes) } }
 interface KeyWrapper { suspend fun wrap(kek: KeyEncryptionKey, vaultKey: VaultKey, aad: ByteArray): SealedBytes; suspend fun unwrap(kek: KeyEncryptionKey, wrapped: SealedBytes, aad: ByteArray): VaultKey }
+/** Thin production adapter over the configured authenticated cipher. */
+class AeadKeyWrapper(private val cipher: AuthenticatedCipher) : KeyWrapper {
+    override suspend fun wrap(kek: KeyEncryptionKey, vaultKey: VaultKey, aad: ByteArray) =
+        cipher.seal(kek.material, vaultKey.material.copy(), aad)
+
+    override suspend fun unwrap(kek: KeyEncryptionKey, wrapped: SealedBytes, aad: ByteArray) =
+        VaultKey(SensitiveBytes(cipher.open(kek.material, wrapped, aad)))
+}
 interface KeyDeriver { suspend fun derive(ikm: SensitiveBytes, context: ByteArray, outputBytes: Int = 32): SensitiveBytes }
 object CryptoContexts { val Catalog = "VEIL/V1/CATALOG".encodeToByteArray(); val FileKeyWrap = "VEIL/V1/FILEKEY-WRAP".encodeToByteArray(); val SlotDescriptor = "VEIL/V1/SLOT-DESCRIPTOR".encodeToByteArray() }
 class FileKeyGenerator(private val random: SecureRandom) { fun generate() = FileKey(SensitiveBytes(random.bytes(32))) }

@@ -16,3 +16,4 @@ include(":shared:core-model", ":shared:core-crypto", ":shared:core-vault", ":sha
 include(":shared:core-transfer", ":shared:core-contacts", ":shared:core-platform")
 include(":shared:ui-design", ":shared:ui-features", ":shared:app")
 include(":desktopApp", ":server:signaling")
+include(":androidApp")

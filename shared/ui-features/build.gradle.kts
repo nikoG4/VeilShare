@@ -4,10 +4,10 @@ kotlin {
     androidTarget(); jvm("desktop"); iosX64(); iosArm64(); iosSimulatorArm64()
     sourceSets {
         commonMain.dependencies {
-            implementation(project(":shared:core-model")); implementation(project(":shared:core-platform")); implementation(project(":shared:ui-design"))
+            implementation(project(":shared:core-model")); implementation(project(":shared:core-platform")); implementation(project(":shared:core-crypto")); implementation(project(":shared:core-vault")); implementation(project(":shared:ui-design"))
             implementation(libs.coroutines.core); implementation(compose.runtime); implementation(compose.foundation); implementation(compose.material3)
         }
-        commonTest.dependencies { implementation(libs.kotlin.test) }
+        commonTest.dependencies { implementation(libs.kotlin.test); implementation(libs.coroutines.test) }
     }
 }
 android { namespace = "dev.veilshare.ui.features"; compileSdk = 36 }
