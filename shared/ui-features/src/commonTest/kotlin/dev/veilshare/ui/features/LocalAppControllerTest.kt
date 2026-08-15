@@ -46,10 +46,47 @@ class LocalAppControllerTest {
         assertIs<RootState.Locked>(controller.state.value);assertEquals("3333",service.primary.changedTo)
     }
 
+    @Test fun lockClosesSessionAndRequestsOwnedPlaintextCleanup() = runTest {
+        val service=FakeService(LocalStorageState.READY);val opener=RecordingOpener()
+        val controller=LocalAppController(service,object:LocalFilePicker{override suspend fun pick():ImportSource?=null},opener,this,StandardTestDispatcher(testScheduler))
+        controller.initialize();controller.unlock("1111".toCharArray());advanceUntilIdle()
+        controller.lock()
+        assertEquals(1,opener.cleanupCalls)
+        assertFalse(service.primary.isOpen)
+        assertIs<RootState.Locked>(controller.state.value)
+    }
+
+    @Test fun pickerAndOpenerFailuresBecomeGenericRecoverableMessages() = runTest {
+        val service=FakeService(LocalStorageState.READY);val dispatcher=StandardTestDispatcher(testScheduler)
+        val picker=object:LocalFilePicker{override suspend fun pick():ImportSource?=error("provider details must not escape")}
+        val opener=object:VaultFileOpener{override suspend fun open(vault:VaultHandle,file:VaultItem.File)=error("viewer details must not escape")}
+        val controller=LocalAppController(service,picker,opener,this,dispatcher)
+        controller.initialize();controller.unlock("1111".toCharArray());advanceUntilIdle()
+        controller.importFile();advanceUntilIdle()
+        var browser=assertIs<RootState.Unlocked>(controller.state.value).browser
+        assertEquals("No se pudo importar el archivo.",browser.message)
+        controller.openFile("seed");advanceUntilIdle()
+        browser=assertIs<RootState.Unlocked>(controller.state.value).browser
+        assertEquals("No se pudo abrir este archivo. Puede estar dañado.",browser.message)
+        assertFalse(browser.message!!.contains("provider"));assertFalse(browser.message!!.contains("viewer"))
+    }
+
+    @Test fun firstRunValidationRejectsShortMismatchedAndEqualCodesWithoutCreatingStorage() = runTest {
+        val service=FakeService(LocalStorageState.EMPTY);val controller=controller(service);controller.initialize()
+        controller.setup("1".toCharArray(),"1".toCharArray(),"2".toCharArray(),"2".toCharArray());advanceUntilIdle()
+        assertEquals("Usa códigos de al menos 4 caracteres.",assertIs<RootState.FirstRun>(controller.state.value).error)
+        controller.setup("1111".toCharArray(),"0000".toCharArray(),"2222".toCharArray(),"2222".toCharArray());advanceUntilIdle()
+        assertEquals("Las confirmaciones no coinciden.",assertIs<RootState.FirstRun>(controller.state.value).error)
+        controller.setup("1111".toCharArray(),"1111".toCharArray(),"1111".toCharArray(),"1111".toCharArray());advanceUntilIdle()
+        assertEquals("Los códigos deben ser diferentes.",assertIs<RootState.FirstRun>(controller.state.value).error)
+        assertEquals(LocalStorageState.EMPTY,service.storage)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.controller(service:FakeService)=LocalAppController(service,object:LocalFilePicker{override suspend fun pick():ImportSource?=null},NoopOpener,this,StandardTestDispatcher(testScheduler))
 }
 
 private object NoopOpener:VaultFileOpener{override suspend fun open(vault:VaultHandle,file:VaultItem.File)=Unit}
+private class RecordingOpener:VaultFileOpener{var cleanupCalls=0;override suspend fun open(vault:VaultHandle,file:VaultItem.File)=Unit;override fun cleanup(){cleanupCalls++}}
 private class FakeService(var storage:LocalStorageState):LocalVaultService{
  val primary=FakeVault("primary.txt");val alternate=FakeVault("alternate.txt");var unlockCalls=0
  override suspend fun storageState()=storage

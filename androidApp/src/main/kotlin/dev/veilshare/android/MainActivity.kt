@@ -37,10 +37,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         picker = AndroidDocumentPicker(this)
-        val openRoot = File(cacheDir, "open-4f16a9").also(::clearOwnedRoot)
+        val openCache = AndroidOwnedPlaintextCache(File(cacheDir, "open-4f16a9"))
         val environment = AppEnvironment(
             AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)), picker,
-            AndroidFileOpener(this, openRoot), lockSignals,
+            AndroidFileOpener(this, openCache), lockSignals,
         )
         setContent {
             BoxWithConstraints {
@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePicker {
+internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePicker {
     private var continuation: Continuation<Uri?>? = null
     var inFlight: Boolean = false; private set
     private val resolver = activity.contentResolver
@@ -77,7 +77,7 @@ private class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePick
     }
 }
 
-private class AndroidUriImportSource(private val resolver: ContentResolver, private val uri: Uri) : ImportSource {
+internal class AndroidUriImportSource(private val resolver: ContentResolver, private val uri: Uri) : ImportSource {
     private val metadata by lazy { resolver.queryMetadata(uri) }
     override val displayName: String get() = metadata.first ?: "archivo"
     override val mimeHint: String? get() = resolver.getType(uri)
@@ -94,11 +94,11 @@ private class AndroidUriImportSource(private val resolver: ContentResolver, priv
     }
 }
 
-private class AndroidFileOpener(private val context: Context, private val root: File) : VaultFileOpener {
+internal class AndroidFileOpener(private val context: Context, private val cache: AndroidOwnedPlaintextCache) : VaultFileOpener {
     override suspend fun open(vault: VaultHandle, file: VaultItem.File) {
         val exported = withContext(Dispatchers.IO) {
             val suffix = file.displayName.substringAfterLast('.', "").takeIf { it.matches(Regex("[A-Za-z0-9]{1,10}")) }?.let { ".$it" } ?: ".bin"
-            File.createTempFile("view-", suffix, root).also { target ->
+            cache.create(suffix).also { target ->
                 try { target.outputStream().use { output -> vault.readFile(file.id) { output.write(it) } } }
                 catch (failure: Throwable) { target.delete(); throw failure }
             }
@@ -108,7 +108,7 @@ private class AndroidFileOpener(private val context: Context, private val root: 
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         try { context.startActivity(intent) } catch (failure: Throwable) { exported.delete(); throw failure }
     }
-    override fun cleanup() { root.listFiles()?.filter { it.isFile }?.forEach { it.delete() } }
+    override fun cleanup() { cache.cleanup() }
 }
 
 private fun ContentResolver.queryMetadata(uri: Uri): Pair<String?, Long?> {
@@ -122,7 +122,14 @@ private fun ContentResolver.queryMetadata(uri: Uri): Pair<String?, Long?> {
     } finally { cursor.close() }
 }
 
-private fun clearOwnedRoot(root: File) {
-    if (root.exists()) root.listFiles()?.forEach { if (it.isFile) it.delete() }
-    check(root.mkdirs() || root.isDirectory)
+internal class AndroidOwnedPlaintextCache(internal val root: File) {
+    init { cleanup(); check(root.mkdirs() || root.isDirectory) }
+
+    fun create(suffix: String): File = File.createTempFile("item-", suffix, root)
+
+    /** Best effort: lock/startup must remain available even if the OS keeps a file busy. */
+    fun cleanup(): Boolean {
+        val children = root.listFiles() ?: return !root.exists() || root.isDirectory
+        return children.fold(true) { clean, child -> child.deleteRecursively() && clean }
+    }
 }

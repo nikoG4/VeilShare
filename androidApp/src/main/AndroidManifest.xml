@@ -1,5 +1,27 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:theme="@style/AppTheme" android:label="Archivos" android:allowBackup="false" android:fullBackupContent="false">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Imports use the system picker and scoped URI grants. Never inherit broad
+         storage/phone permissions implied by legacy transitive manifests. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:node="remove"
+        tools:ignore="ScopedStorage" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        tools:node="remove"
+        tools:ignore="ScopedStorage" />
+    <uses-permission
+        android:name="android.permission.READ_PHONE_STATE"
+        tools:node="remove" />
+    <application
+        android:theme="@style/AppTheme"
+        android:label="Archivos"
+        android:icon="@drawable/ic_app"
+        android:roundIcon="@drawable/ic_app"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

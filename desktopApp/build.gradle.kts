@@ -10,4 +10,5 @@ dependencies {
     implementation(project(":shared:ui-design"))
     implementation(compose.desktop.currentOs)
     implementation(libs.coroutines.core)
+    testImplementation(libs.kotlin.test)
 }

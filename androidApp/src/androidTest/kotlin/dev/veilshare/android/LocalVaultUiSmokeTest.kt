@@ -16,9 +16,9 @@ class LocalVaultUiSmokeTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
 
     @Test fun firstRunGenericUnlockBrowserFolderDeleteAndPinChange() {
-        compose.waitUntil(10_000){compose.onAllNodesWithText("Configura tus archivos").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(10_000){compose.onAllNodesWithText("Prepara tus archivos").fetchSemanticsNodes().isNotEmpty()}
         val setup=compose.onAllNodes(hasSetTextAction());setup[0].performTextInput("5101");setup[1].performTextInput("5101");setup[2].performTextInput("5202");setup[3].performTextInput("5202")
-        compose.onNodeWithText("Crear y bloquear").performClick()
+        compose.onNodeWithText("Crear espacios").performClick()
         waitText("Continuar",30_000);unlock("5101");waitText("Nueva carpeta",30_000)
         compose.onNodeWithText("Nueva carpeta").performClick();compose.onNode(hasSetTextAction()).performTextInput("Trabajo");compose.onNodeWithText("Crear").performClick();waitText("Trabajo")
         compose.onNodeWithText("Bloquear").performClick();waitText("Continuar")
@@ -29,9 +29,9 @@ class LocalVaultUiSmokeTest {
             vault.import(UiBytesSource("visible.txt","contenido".encodeToByteArray()),VaultDirectoryId(folder.id.value));vault.close()
         }
         unlock("5101");waitText("Trabajo");compose.onNodeWithText("Trabajo").performClick();waitText("visible.txt")
-        compose.onAllNodesWithText("Eliminar")[0].performClick();compose.onAllNodesWithText("Eliminar")[1].performClick()
+        compose.onNodeWithText("Más").performClick();compose.onNodeWithText("Eliminar").performClick();compose.onAllNodesWithText("Eliminar")[1].performClick()
         compose.waitUntil(10_000){compose.onAllNodesWithText("visible.txt").fetchSemanticsNodes().isEmpty()}
-        compose.onNodeWithText("Ajustes").performClick();val pins=compose.onAllNodes(hasSetTextAction());pins[0].performTextInput("5303");pins[1].performTextInput("5303");compose.onNodeWithText("Cambiar").performClick()
+        compose.onNodeWithText("Ajustes").performClick();val pins=compose.onAllNodes(hasSetTextAction());pins[0].performTextInput("5303");pins[1].performTextInput("5303");compose.onAllNodesWithText("Cambiar código")[1].performClick()
         waitText("Continuar",30_000);unlock("5101");waitText("No se pudo continuar.",30_000);unlock("5303");waitText("Trabajo",30_000)
     }
 
