@@ -8,6 +8,7 @@ dependencies {
     implementation(libs.ktor.server.cio)
     implementation(libs.ktor.server.websockets)
     testImplementation(libs.kotlin.test)
+    testImplementation(project(":shared:core-platform"))
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.ktor.client.core)
     testImplementation(libs.ktor.client.cio)
