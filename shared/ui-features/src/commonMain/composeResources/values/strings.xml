@@ -45,4 +45,38 @@
     <string name="close">Cerrar</string>
     <string name="fatal_title">No se pudo continuar</string>
     <string name="fatal_description">Reinicia la aplicación para volver a comprobar el estado. No se realizará ninguna limpieza automática.</string>
+    
+    <!-- Sharing strings -->
+    <string name="share_title">Compartir</string>
+    <string name="share_sender_title">Enviar archivo</string>
+    <string name="share_sender_description">Selecciona un archivo e ingresa el código de referencia del destinatario.</string>
+    <string name="share_select_file">Archivo a enviar</string>
+    <string name="share_browse">Examinar…</string>
+    <string name="share_file_selected">Archivo seleccionado</string>
+    <string name="share_reference_code">Código de referencia</string>
+    <string name="share_enter_code">Ingresa el código (ej: 2345-6789-ABCD-EFGH)</string>
+    <string name="share_send">Enviar</string>
+    <string name="share_connecting_title">Conectando…</string>
+    <string name="share_connecting_description">Buscando al destinatario con código %1$s</string>
+    <string name="share_sending_title">Enviando archivo</string>
+    <string name="share_sending_description">El archivo se está transmitiendo de forma segura.</string>
+    <string name="share_complete_title">¡Enviado!</string>
+    <string name="share_complete_description">El archivo se ha enviado correctamente.</string>
+    <string name="share_receive_complete_description">El archivo se ha recibido y guardado correctamente.</string>
+    <string name="share_cancelled_title">Cancelado</string>
+    <string name="share_cancelled_description">La transferencia fue cancelada.</string>
+    <string name="share_error_title">Error</string>
+    <string name="retry">Reintentar</string>
+    <string name="done">Listo</string>
+    
+    <string name="share_receiver_waiting_title">Esperando transferencia</string>
+    <string name="share_receiver_waiting_description">Comparte este código con el remitente: %1$s</string>
+    <string name="share_incoming_title">Transferencia entrante</string>
+    <string name="share_incoming_description">%1$s quiere enviarte un archivo</string>
+    <string name="share_receiving_title">Recibiendo archivo</string>
+    <string name="share_receiving_description">El archivo se está descargando de forma segura.</string>
+    <string name="share_accept">Aceptar</string>
+    <string name="share_reject">Rechazar</string>
+    <string name="share_rejected_title">Rechazado</string>
+    <string name="share_rejected_description">La transferencia fue rechazada.</string>
 </resources>

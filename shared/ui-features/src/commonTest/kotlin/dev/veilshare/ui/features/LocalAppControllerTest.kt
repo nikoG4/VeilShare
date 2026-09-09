@@ -35,7 +35,16 @@ class LocalAppControllerTest {
 
     @Test fun browserFolderImportDeleteAndPinChangeRefreshAuthoritativeState() = runTest {
         val service=FakeService(LocalStorageState.READY);val source=BytesSource("nuevo.txt","nuevo".encodeToByteArray())
-        val dispatcher=StandardTestDispatcher(testScheduler);val controller=LocalAppController(service,object:LocalFilePicker{override suspend fun pick()=source},NoopOpener,this,dispatcher)
+        val dispatcher=StandardTestDispatcher(testScheduler)
+        val controller=LocalAppController(
+            service,
+            object: LocalFilePicker { override suspend fun pick() = source },
+            NoopOpener,
+            object: SharingFilePicker { override suspend fun pickFile(): SharingFilePickerResult? = null },
+            object: SharingReferenceCodeInput { override suspend fun getReferenceCode(): String? = null },
+            this,
+            dispatcher,
+        )
         controller.initialize();controller.unlock("1111".toCharArray());advanceUntilIdle()
         controller.createFolder("Trabajo");advanceUntilIdle();val folder=assertIs<RootState.Unlocked>(controller.state.value).browser.items.single{it.isDirectory}
         controller.enterFolder(folder.id);controller.importFile();advanceUntilIdle()
@@ -48,7 +57,15 @@ class LocalAppControllerTest {
 
     @Test fun lockClosesSessionAndRequestsOwnedPlaintextCleanup() = runTest {
         val service=FakeService(LocalStorageState.READY);val opener=RecordingOpener()
-        val controller=LocalAppController(service,object:LocalFilePicker{override suspend fun pick():ImportSource?=null},opener,this,StandardTestDispatcher(testScheduler))
+        val controller=LocalAppController(
+            service,
+            object: LocalFilePicker { override suspend fun pick(): ImportSource? = null },
+            opener,
+            object: SharingFilePicker { override suspend fun pickFile(): SharingFilePickerResult? = null },
+            object: SharingReferenceCodeInput { override suspend fun getReferenceCode(): String? = null },
+            this,
+            StandardTestDispatcher(testScheduler),
+        )
         controller.initialize();controller.unlock("1111".toCharArray());advanceUntilIdle()
         controller.lock()
         assertEquals(1,opener.cleanupCalls)
@@ -60,7 +77,15 @@ class LocalAppControllerTest {
         val service=FakeService(LocalStorageState.READY);val dispatcher=StandardTestDispatcher(testScheduler)
         val picker=object:LocalFilePicker{override suspend fun pick():ImportSource?=error("provider details must not escape")}
         val opener=object:VaultFileOpener{override suspend fun open(vault:VaultHandle,file:VaultItem.File)=error("viewer details must not escape")}
-        val controller=LocalAppController(service,picker,opener,this,dispatcher)
+        val controller=LocalAppController(
+            service,
+            picker,
+            opener,
+            object: SharingFilePicker { override suspend fun pickFile(): SharingFilePickerResult? = null },
+            object: SharingReferenceCodeInput { override suspend fun getReferenceCode(): String? = null },
+            this,
+            dispatcher,
+        )
         controller.initialize();controller.unlock("1111".toCharArray());advanceUntilIdle()
         controller.importFile();advanceUntilIdle()
         var browser=assertIs<RootState.Unlocked>(controller.state.value).browser
@@ -82,7 +107,15 @@ class LocalAppControllerTest {
         assertEquals(LocalStorageState.EMPTY,service.storage)
     }
 
-    private fun kotlinx.coroutines.test.TestScope.controller(service:FakeService)=LocalAppController(service,object:LocalFilePicker{override suspend fun pick():ImportSource?=null},NoopOpener,this,StandardTestDispatcher(testScheduler))
+    private fun kotlinx.coroutines.test.TestScope.controller(service:FakeService)=LocalAppController(
+    service,
+    object: LocalFilePicker { override suspend fun pick(): ImportSource? = null },
+    NoopOpener,
+    object: SharingFilePicker { override suspend fun pickFile(): SharingFilePickerResult? = null },
+    object: SharingReferenceCodeInput { override suspend fun getReferenceCode(): String? = null },
+    this,
+    StandardTestDispatcher(testScheduler),
+)
 }
 
 private object NoopOpener:VaultFileOpener{override suspend fun open(vault:VaultHandle,file:VaultItem.File)=Unit}

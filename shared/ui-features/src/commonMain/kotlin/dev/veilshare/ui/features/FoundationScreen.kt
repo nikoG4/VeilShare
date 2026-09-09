@@ -34,6 +34,8 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
                 is RootState.Locked -> UnlockScreen(value, controller)
                 is RootState.Unlocked -> BrowserScreen(value.browser, controller, windowClass)
                 is RootState.Fatal -> ErrorScreen(value.message)
+                is RootState.SharingSender -> SenderScreen(value.state, controller)
+                is RootState.SharingReceiver -> ReceiverScreen(value.state, controller)
             }
         }
     }
@@ -214,4 +216,341 @@ private fun formatSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> "${bytes / 1024} KiB"
     bytes < 1024L * 1024 * 1024 -> "${bytes / (1024 * 1024)} MiB"
     else -> "${bytes / (1024L * 1024 * 1024)} GiB"
+}
+
+@Composable
+fun SenderScreen(state: SharingSenderState, controller: LocalAppController) {
+    when (state) {
+        is SharingSenderState.Preparing -> SenderPreparingScreen(state, controller)
+        is SharingSenderState.Connecting -> SenderConnectingScreen(state, controller)
+        is SharingSenderState.Sending -> SenderProgressScreen(state.progress, controller)
+        is SharingSenderState.Completed -> SenderCompletedScreen(controller)
+        is SharingSenderState.Error -> SenderErrorScreen(state, controller)
+        is SharingSenderState.Cancelled -> SenderCancelledScreen(controller)
+    }
+}
+
+@Composable
+private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controller: LocalAppController) {
+    var referenceCode by remember { mutableStateOf(state.referenceCode ?: "") }
+    var selectedFile by remember { mutableStateOf(state.selectedFile ?: "") }
+    val focusRequester = remember { FocusRequester() }
+    
+    LaunchedEffect(Unit) { withFrameNanos { }; focusRequester.requestFocus() }
+    
+    ElevatedCard(Modifier.widthIn(max = 520.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_sender_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_sender_description))
+            HorizontalDivider()
+            
+            // File selection
+            Text(stringResource(Res.string.share_select_file), style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = selectedFile,
+                    onValueChange = { selectedFile = it },
+                    label = { Text(stringResource(Res.string.share_file_selected)) },
+                    enabled = false,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(onClick = { controller.selectSharingFile() }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.share_browse))
+                }
+            }
+            
+            // Reference code input
+            Text(stringResource(Res.string.share_reference_code), style = MaterialTheme.typography.titleSmall)
+            OutlinedTextField(
+                value = referenceCode,
+                onValueChange = { referenceCode = it.uppercase() },
+                label = { Text(stringResource(Res.string.share_enter_code)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { 
+                    controller.enterSharingReferenceCode(referenceCode)
+                    controller.startSharingTransfer()
+                }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+            )
+            
+            // Actions
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.cancel))
+                }
+                Button(
+                    onClick = {
+                        if (referenceCode.isNotBlank() && selectedFile.isNotBlank()) {
+                            controller.enterSharingReferenceCode(referenceCode)
+                            controller.startSharingTransfer()
+                        }
+                    },
+                    enabled = referenceCode.isNotBlank() && selectedFile.isNotBlank(),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                ) {
+                    Text(stringResource(Res.string.share_send))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderConnectingScreen(state: SharingSenderState.Connecting, controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_connecting_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_connecting_description, state.referenceCode.value))
+            CircularProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 40.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.cancel))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderProgressScreen(progress: SharingProgress, controller: LocalAppController) {
+    val fraction = if (progress.totalBytes > 0) progress.bytesTransferred.toFloat() / progress.totalBytes else null
+    ElevatedCard(Modifier.widthIn(max = 520.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_sending_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_sending_description))
+            
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (fraction == null) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth())
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (progress.totalBytes == 0L) 
+                            "Enviando ${formatSize(progress.bytesTransferred)}" 
+                        else 
+                            "${formatSize(progress.bytesTransferred)} de ${formatSize(progress.totalBytes)}",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("${progress.currentChunk}/${progress.totalChunks}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.cancel))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderCompletedScreen(controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
+            Text(stringResource(Res.string.share_complete_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_complete_description))
+            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.done))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderErrorScreen(state: SharingSenderState.Error, controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 500.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(stringResource(Res.string.share_error_title), style = MaterialTheme.typography.headlineSmall)
+            Text(state.message)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (state.canRetry) {
+                    OutlinedButton(onClick = { controller.startSharingSender() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                        Text(stringResource(Res.string.retry))
+                    }
+                }
+                Button(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.close))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderCancelledScreen(controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(stringResource(Res.string.share_cancelled_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_cancelled_description))
+            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.done))
+            }
+        }
+    }
+}
+
+@Composable
+fun ReceiverScreen(state: SharingReceiverState, controller: LocalAppController) {
+    when (state) {
+        is SharingReceiverState.Waiting -> ReceiverWaitingScreen(state, controller)
+        is SharingReceiverState.Incoming -> ReceiverIncomingScreen(state, controller)
+        is SharingReceiverState.Receiving -> ReceiverProgressScreen(state.progress, controller)
+        is SharingReceiverState.Completed -> ReceiverCompletedScreen(controller)
+        is SharingReceiverState.Error -> ReceiverErrorScreen(state, controller)
+        is SharingReceiverState.Rejected -> ReceiverRejectedScreen(controller)
+        is SharingReceiverState.Cancelled -> ReceiverCancelledScreen(controller)
+    }
+}
+
+@Composable
+private fun ReceiverWaitingScreen(state: SharingReceiverState.Waiting, controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_receiver_waiting_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_receiver_waiting_description, state.referenceCode.value))
+            CircularProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 40.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.cancel))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiverIncomingScreen(state: SharingReceiverState.Incoming, controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 520.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_incoming_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_incoming_description, state.senderIdentity))
+            
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(state.fileName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+                Text(formatSize(state.fileSize), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = { 
+                        // TODO: Implement reject
+                        controller.cancelSharing()
+                    },
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text(stringResource(Res.string.share_reject))
+                }
+                Button(
+                    onClick = { 
+                        // TODO: Implement accept
+                    },
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                ) {
+                    Text(stringResource(Res.string.share_accept))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiverProgressScreen(progress: SharingProgress, controller: LocalAppController) {
+    val fraction = if (progress.totalBytes > 0) progress.bytesTransferred.toFloat() / progress.totalBytes else null
+    ElevatedCard(Modifier.widthIn(max = 520.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_receiving_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_receiving_description))
+            
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (fraction == null) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth())
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (progress.totalBytes == 0L) 
+                            "Recibiendo ${formatSize(progress.bytesTransferred)}" 
+                        else 
+                            "${formatSize(progress.bytesTransferred)} de ${formatSize(progress.totalBytes)}",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("${progress.currentChunk}/${progress.totalChunks}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text(stringResource(Res.string.cancel))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiverCompletedScreen(controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
+            Text(stringResource(Res.string.share_complete_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_receive_complete_description))
+            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.done))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiverErrorScreen(state: SharingReceiverState.Error, controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 500.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(stringResource(Res.string.share_error_title), style = MaterialTheme.typography.headlineSmall)
+            Text(state.message)
+            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.close))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiverRejectedScreen(controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(stringResource(Res.string.share_rejected_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_rejected_description))
+            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.done))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiverCancelledScreen(controller: LocalAppController) {
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(stringResource(Res.string.share_cancelled_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.share_cancelled_description))
+            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.done))
+            }
+        }
+    }
 }

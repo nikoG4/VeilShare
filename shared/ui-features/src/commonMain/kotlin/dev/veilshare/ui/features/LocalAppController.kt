@@ -1,5 +1,6 @@
 package dev.veilshare.ui.features
 
+import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.vault.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -17,6 +18,8 @@ class LocalAppController(
     private val service: LocalVaultService,
     private val picker: LocalFilePicker,
     private val opener: VaultFileOpener,
+    private val sharingFilePicker: SharingFilePicker,
+    private val sharingReferenceInput: SharingReferenceCodeInput,
     private val scope: CoroutineScope,
     private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : AutoCloseable {
@@ -24,6 +27,7 @@ class LocalAppController(
     val state: StateFlow<RootState> = mutableState.asStateFlow()
     private var active: VaultHandle? = null
     private var importJob: Job? = null
+    private var sharingJob: Job? = null
 
     suspend fun initialize() {
         mutableState.value = when (withContext(workDispatcher) { service.storageState() }) {
@@ -138,6 +142,95 @@ class LocalAppController(
     }
 
     override fun close() = lock()
+
+    // Sharing actions
+    fun startSharingSender() {
+        val current = mutableState.value
+        if (current !is RootState.Unlocked) return
+        mutableState.value = RootState.SharingSender(SharingSenderState.Preparing())
+    }
+
+    fun selectSharingFile() {
+        val current = mutableState.value
+        if (current !is RootState.SharingSender) return
+        scope.launch {
+            val result = sharingFilePicker.pickFile()
+            if (result != null) {
+                val state = mutableState.value as? RootState.SharingSender
+                if (state != null) {
+                    val preparing = state.state as? SharingSenderState.Preparing
+                    if (preparing != null) {
+                        mutableState.value = RootState.SharingSender(
+                            preparing.copy(selectedFile = result.displayName)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun enterSharingReferenceCode(referenceCode: String) {
+        val state = mutableState.value
+        if (state !is RootState.SharingSender) return
+        val preparing = state.state as? SharingSenderState.Preparing
+        if (preparing != null) {
+            mutableState.value = RootState.SharingSender(preparing.copy(referenceCode = referenceCode))
+        }
+    }
+
+    fun startSharingTransfer() {
+        val state = mutableState.value
+        if (state !is RootState.SharingSender) return
+        val preparing = state.state as? SharingSenderState.Preparing ?: return
+        preparing.referenceCode?.let { refCode ->
+            preparing.selectedFile?.let { fileName ->
+                scope.launch {
+                    mutableState.value = RootState.SharingSender(SharingSenderState.Connecting(ReferenceCode(refCode)))
+                    // TODO: Implement actual sharing transfer
+                    // For now, simulate progress
+                    mutableState.value = RootState.SharingSender(SharingSenderState.Sending(SharingProgress(0, 1000000, 0, 10)))
+                    // Simulate completion
+                    kotlinx.coroutines.delay(2000)
+                    mutableState.value = RootState.SharingSender(SharingSenderState.Completed)
+                    kotlinx.coroutines.delay(1000)
+                    returnToBrowser()
+                }
+            }
+        }
+    }
+
+    fun cancelSharing() {
+        sharingJob?.cancel()
+        sharingJob = null
+        val current = mutableState.value
+        if (current is RootState.SharingSender) {
+            mutableState.value = RootState.SharingSender(SharingSenderState.Cancelled)
+        } else if (current is RootState.SharingReceiver) {
+            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Cancelled)
+        }
+    }
+
+    private fun returnToBrowser() {
+        val activeVault = active
+        if (activeVault != null) {
+            mutableState.value = RootState.Unlocked(browserState(activeVault, null))
+        } else {
+            mutableState.value = RootState.Locked()
+        }
+    }
+
+    // Sharing receiver (stub for now)
+    fun startSharingReceiver() {
+        val current = mutableState.value
+        if (current !is RootState.Unlocked) return
+        scope.launch {
+            val code = sharingReferenceInput.getReferenceCode()
+            code?.let { refCode ->
+                mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(ReferenceCode(refCode)))
+                // TODO: Implement actual receiver logic
+            }
+        }
+    }
 
     private fun mutate(label: String, operation: suspend (VaultHandle, BrowserState) -> Unit) {
         val state = mutableState.value as? RootState.Unlocked ?: return
