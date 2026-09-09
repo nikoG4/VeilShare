@@ -15,6 +15,25 @@ object VeilCryptoSuites {
     val v1 = CryptoSuiteDefinition(CryptoSuiteId.VEIL_CRYPTO_V1, "Argon2id v1.3", "ChaCha20-Poly1305 IETF", 32, 12, 16, 1_048_576)
 }
 
+@JvmInline value class Ed25519PrivateKey(val material: SensitiveBytes)
+@JvmInline value class Ed25519PublicKey(val bytes: ByteArray)
+@JvmInline value class X25519PrivateKey(val material: SensitiveBytes)
+@JvmInline value class X25519PublicKey(val bytes: ByteArray)
+
+data class Ed25519KeyPair(val privateKey: Ed25519PrivateKey, val publicKey: Ed25519PublicKey)
+data class X25519KeyPair(val privateKey: X25519PrivateKey, val publicKey: X25519PublicKey)
+
+interface Ed25519Signer {
+    fun generateKeyPair(): Ed25519KeyPair
+    fun sign(privateKey: Ed25519PrivateKey, message: ByteArray): ByteArray
+    fun verify(publicKey: Ed25519PublicKey, message: ByteArray, signature: ByteArray): Boolean
+}
+
+interface X25519KeyAgreement {
+    fun generateKeyPair(): X25519KeyPair
+    fun deriveSharedSecret(privateKey: X25519PrivateKey, peerPublicKey: X25519PublicKey): SensitiveBytes
+}
+
 class SensitiveBytes(private val bytes: ByteArray) : AutoCloseable {
     fun copy(): ByteArray = bytes.copyOf()
     override fun close() { bytes.fill(0) }

@@ -4,12 +4,19 @@ import java.security.SecureRandom as JcaSecureRandom
 import org.bouncycastle.crypto.InvalidCipherTextException
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.generators.HKDFBytesGenerator
+import org.bouncycastle.crypto.generators.X25519KeyPairGenerator
 import org.bouncycastle.crypto.digests.SHA256Digest
 import org.bouncycastle.crypto.modes.ChaCha20Poly1305
 import org.bouncycastle.crypto.params.AEADParameters
 import org.bouncycastle.crypto.params.Argon2Parameters as BcArgon2Parameters
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.params.KeyParameter
+import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import org.bouncycastle.crypto.params.HKDFParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer as BcEd25519Signer
+import org.bouncycastle.crypto.agreement.X25519Agreement
 
 /** Same Bouncy Castle raw Argon2id derivation as the Desktop adapter; Android device verification remains required. */
 class AndroidSecureRandom : SecureRandom { private val delegate=JcaSecureRandom(); override fun bytes(size:Int)=ByteArray(size).also(delegate::nextBytes) }
@@ -26,4 +33,57 @@ class AndroidHkdfSha256KeyDeriver : KeyDeriver {
 object AndroidProductionCrypto {
     fun create() = ProductionCryptoComponents(AndroidArgon2idPasswordKdf(), AndroidChaCha20Poly1305Cipher(), AndroidSecureRandom())
     fun keyDeriver(): KeyDeriver = AndroidHkdfSha256KeyDeriver()
+    fun ed25519Signer(): Ed25519Signer = AndroidEd25519Signer()
+    fun x25519KeyAgreement(): X25519KeyAgreement = AndroidX25519KeyAgreement()
+}
+
+class AndroidEd25519Signer : Ed25519Signer {
+    override fun generateKeyPair(): Ed25519KeyPair {
+        val random = JcaSecureRandom()
+        val seed = ByteArray(32).also { random.nextBytes(it) }
+        val privateParams = Ed25519PrivateKeyParameters(seed, 0)
+        val publicParams = privateParams.generatePublicKey()
+        return Ed25519KeyPair(
+            Ed25519PrivateKey(SensitiveBytes(privateParams.getEncoded())),
+            Ed25519PublicKey(publicParams.getEncoded())
+        )
+    }
+
+    override fun sign(privateKey: Ed25519PrivateKey, message: ByteArray): ByteArray {
+        val signer = BcEd25519Signer()
+        val params = Ed25519PrivateKeyParameters(privateKey.material.copy(), 0)
+        signer.init(true, params)
+        signer.update(message, 0, message.size)
+        return signer.generateSignature()
+    }
+
+    override fun verify(publicKey: Ed25519PublicKey, message: ByteArray, signature: ByteArray): Boolean {
+        val signer = BcEd25519Signer()
+        val params = Ed25519PublicKeyParameters(publicKey.bytes, 0)
+        signer.init(false, params)
+        signer.update(message, 0, message.size)
+        return signer.verifySignature(signature)
+    }
+}
+
+class AndroidX25519KeyAgreement : X25519KeyAgreement {
+    override fun generateKeyPair(): X25519KeyPair {
+        val generator = X25519KeyPairGenerator()
+        generator.init(org.bouncycastle.crypto.params.X25519KeyGenerationParameters(JcaSecureRandom()))
+        val keyPair = generator.generateKeyPair()
+        val privateParams = keyPair.getPrivate() as X25519PrivateKeyParameters
+        val publicParams = keyPair.getPublic() as X25519PublicKeyParameters
+        return X25519KeyPair(
+            X25519PrivateKey(SensitiveBytes(privateParams.getEncoded())),
+            X25519PublicKey(publicParams.getEncoded())
+        )
+    }
+
+    override fun deriveSharedSecret(privateKey: X25519PrivateKey, peerPublicKey: X25519PublicKey): SensitiveBytes {
+        val agreement = X25519Agreement()
+        agreement.init(X25519PrivateKeyParameters(privateKey.material.copy(), 0))
+        val sharedSecret = ByteArray(agreement.getAgreementSize())
+        agreement.calculateAgreement(X25519PublicKeyParameters(peerPublicKey.bytes, 0), sharedSecret, 0)
+        return SensitiveBytes(sharedSecret)
+    }
 }

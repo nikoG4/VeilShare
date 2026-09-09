@@ -185,3 +185,104 @@ data class PeerEnvelope(
         require(payload.size <= SharingProtocol.MAX_PEER_PAYLOAD_BYTES) { "Peer payload too large" }
     }
 }
+
+@Serializable
+data class SessionHello(
+    val sharingIdentityIdHash: String,
+    val sharingPublicKey: String,
+    val sessionIdHash: String,
+    val protocolVersion: Int = SharingProtocol.VERSION,
+    val signature: String,
+) {
+    init {
+        SharingProtocol.requireSupported(protocolVersion)
+        require(sharingIdentityIdHash.isNotBlank() && sharingIdentityIdHash.length <= 128)
+        require(sharingPublicKey.isNotBlank() && sharingPublicKey.length <= 512)
+        require(sessionIdHash.isNotBlank() && sessionIdHash.length <= 128)
+        require(signature.isNotBlank() && signature.length <= 512)
+    }
+}
+
+@Serializable
+data class SessionConfirm(
+    val sharingIdentityIdHash: String,
+    val sharingPublicKey: String,
+    val sessionIdHash: String,
+    val receiverEphemeralPublicKey: String,
+    val protocolVersion: Int = SharingProtocol.VERSION,
+    val signature: String,
+) {
+    init {
+        SharingProtocol.requireSupported(protocolVersion)
+        require(sharingIdentityIdHash.isNotBlank() && sharingIdentityIdHash.length <= 128)
+        require(sharingPublicKey.isNotBlank() && sharingPublicKey.length <= 512)
+        require(sessionIdHash.isNotBlank() && sessionIdHash.length <= 128)
+        require(receiverEphemeralPublicKey.isNotBlank() && receiverEphemeralPublicKey.length <= 512)
+        require(signature.isNotBlank() && signature.length <= 512)
+    }
+}
+
+@Serializable
+data class SessionConfirmAck(
+    val sessionIdHash: String,
+    val senderEphemeralPublicKey: String,
+    val transcriptHash: String,
+    val protocolVersion: Int = SharingProtocol.VERSION,
+) {
+    init {
+        SharingProtocol.requireSupported(protocolVersion)
+        require(sessionIdHash.isNotBlank() && sessionIdHash.length <= 128)
+        require(senderEphemeralPublicKey.isNotBlank() && senderEphemeralPublicKey.length <= 512)
+        require(transcriptHash.isNotBlank() && transcriptHash.length <= 128)
+    }
+}
+
+@Serializable
+data class TransferData(
+    val transferIdHash: String,
+    val fileIdHash: String,
+    val chunkIndex: Int,
+    val totalChunks: Int,
+    val ciphertext: ByteArray,
+    val nonce: ByteArray,
+    val protocolVersion: Int = SharingProtocol.VERSION,
+) {
+    init {
+        SharingProtocol.requireSupported(protocolVersion)
+        require(transferIdHash.isNotBlank() && transferIdHash.length <= 128)
+        require(fileIdHash.isNotBlank() && fileIdHash.length <= 128)
+        require(chunkIndex >= 0)
+        require(totalChunks > 0)
+        require(chunkIndex < totalChunks)
+        require(ciphertext.isNotEmpty() && ciphertext.size <= SharingProtocol.MAX_PEER_PAYLOAD_BYTES)
+        require(nonce.size == 12) // ChaCha20-Poly1305 nonce
+    }
+}
+
+@Serializable
+data class TransferComplete(
+    val transferIdHash: String,
+    val fileIdHash: String,
+    val totalChunks: Int,
+    val protocolVersion: Int = SharingProtocol.VERSION,
+) {
+    init {
+        SharingProtocol.requireSupported(protocolVersion)
+        require(transferIdHash.isNotBlank() && transferIdHash.length <= 128)
+        require(fileIdHash.isNotBlank() && fileIdHash.length <= 128)
+        require(totalChunks > 0)
+    }
+}
+
+@Serializable
+data class TransferCancel(
+    val transferIdHash: String,
+    val reason: String,
+    val protocolVersion: Int = SharingProtocol.VERSION,
+) {
+    init {
+        SharingProtocol.requireSupported(protocolVersion)
+        require(transferIdHash.isNotBlank() && transferIdHash.length <= 128)
+        require(reason.isNotBlank() && reason.length <= 512)
+    }
+}
