@@ -20,6 +20,10 @@ object TransferProtocol {
 data class TransferConfig(
     val chunkSize: Int = TransferProtocol.CHUNK_SIZE,
     val maxChunks: Int = TransferProtocol.MAX_CHUNKS,
+    val maxRetries: Int = 3,
+    val baseRetryDelayMs: Long = 500,
+    val maxRetryDelayMs: Long = 10_000,
+    val retryBackoffMultiplier: Double = 2.0,
 )
 
 sealed interface TransferError {
@@ -30,6 +34,8 @@ sealed interface TransferError {
     data class TransferCancelled(val reason: String) : TransferError
     data class IoError(val message: String) : TransferError
 }
+
+class TransferException(val error: TransferError, cause: Throwable? = null) : Exception(error.toString(), cause)
 
 interface TransferSender {
     suspend fun send(

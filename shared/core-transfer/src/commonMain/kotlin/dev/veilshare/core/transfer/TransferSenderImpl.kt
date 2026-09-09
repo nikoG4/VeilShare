@@ -58,15 +58,58 @@ class DefaultTransferSender(
                 nonce = nonce.bytes,
             )
 
-            sender.send(transferData)
+            sendWithRetry(transferData, sender)
             bytesSent += chunk.size.toLong()
             chunkIndex++
         }
 
-        sender.complete(transferIdHash, fileIdHash, totalChunks)
+        completeWithRetry(transferIdHash, fileIdHash, totalChunks, sender)
         source.close()
 
         return TransferResult(totalChunks, bytesSent)
+    }
+
+    private suspend fun sendWithRetry(data: TransferData, sender: TransferNetworkSender) {
+        var attempt = 0
+        var delayMs = config.baseRetryDelayMs.toDouble()
+        
+        while (true) {
+            try {
+                sender.send(data)
+                return
+            } catch (e: Exception) {
+                attempt++
+                if (attempt > config.maxRetries) {
+                    throw TransferException(TransferError.IoError("Failed to send chunk ${data.chunkIndex} after ${config.maxRetries} retries: ${e.message}"), e)
+                }
+                kotlinx.coroutines.delay(delayMs.toLong())
+                delayMs = (delayMs * config.retryBackoffMultiplier).coerceAtMost(config.maxRetryDelayMs.toDouble())
+            }
+        }
+    }
+
+    private suspend fun completeWithRetry(
+        transferIdHash: String, 
+        fileIdHash: String, 
+        totalChunks: Int, 
+        sender: TransferNetworkSender
+    ) {
+        var attempt = 0
+        var delayMs = config.baseRetryDelayMs.toDouble()
+        
+        while (true) {
+            try {
+                sender.complete(transferIdHash, fileIdHash, totalChunks)
+                return
+            } catch (e: Exception) {
+                attempt++
+                if (attempt > config.maxRetries) {
+                    throw TransferException(TransferError.IoError("Failed to send COMPLETE after ${config.maxRetries} retries: ${e.message}"), e)
+                }
+                kotlinx.coroutines.delay(delayMs.toLong())
+                delayMs = (delayMs * config.retryBackoffMultiplier).coerceAtMost(config.maxRetryDelayMs.toDouble())
+            }
+        }
     }
 
     internal fun calculateTotalChunks(fileSize: Long): Int {
