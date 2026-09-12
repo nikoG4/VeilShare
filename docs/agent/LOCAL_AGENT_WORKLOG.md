@@ -11,6 +11,7 @@ Frozen local vault core remains green.
 
 ## Current Objective
 Sharing V1 — implement authenticated E2E handshake (handshake layer between signaling relay and file transfer).
+TransferReceiver concurrency fix complete — all tests green on Desktop and Android.
 
 ## Security Invariants
 - Independent sharing identity per logical context.
@@ -45,10 +46,23 @@ Issues found and fixed: core-model→core-crypto dependency break, expect/actual
 - Added unit/integration tests for protocol validation, IDs, state machine, registries, rate limiting, and WebSocket relay.
 - 10 design docs written under docs/sharing/ (architecture, protocol, state machine, handshake contract, threat model, failure model, receiver import contract, metadata privacy table, REAL/decoy privacy, implementation plan).
 
+### Phase: TransferReceiver Concurrency Fix (current session)
+- Fixed TransferReceiver.kt compilation errors on Desktop and Android.
+- Added proper Mutex factory function (`newMutex()`) in Mutex.kt using kotlinx.coroutines.sync.Mutex.
+- Replaced `Mutex()` constructor calls with `newMutex()` factory.
+- Made `getImportSource` suspend in TransferReceiver interface to support Mutex.withLock.
+- Made TransferState methods suspend where they use mutex (`getChunk`, `isComplete`, `getTotalBytes`, `cancel`, `fail`, `isCancelled`, `isFailed`, `isCompleted`).
+- Added non-suspend `getTotalBytesSync()` for property accessors that need sizeHint.
+- Fixed `receive()` to use `mapMutex.withLock()` instead of manual lock/unlock.
+- Fixed `TransferImportSourceImpl` to use `state.totalChunks` instead of bare `totalChunks`.
+
 ## Tests / Commands Verified
 ### This session (2026-09-08)
 - `.\gradlew.bat :shared:core-platform:allTests :server:signaling:test --no-daemon` → BUILD SUCCESSFUL (60 tasks, 8 executed)
 - `.\gradlew.bat :shared:core-model:allTests :server:signaling:build :shared:core-vault:desktopTest :shared:core-crypto:desktopTest --no-daemon` → BUILD SUCCESSFUL (62 tasks, 8 executed)
+- `.\gradlew.bat :shared:core-transfer:compileKotlinDesktop :shared:core-transfer:compileDebugKotlinAndroid --no-daemon` → BUILD SUCCESSFUL
+- `.\gradlew.bat :shared:core-transfer:desktopTest --no-daemon` → BUILD SUCCESSFUL
+- `.\gradlew.bat :shared:core-model:desktopTest :shared:core-crypto:desktopTest :shared:core-transfer:desktopTest :shared:core-vault:desktopTest :server:signaling:test --no-daemon` → BUILD SUCCESSFUL
 
 ### Historical regressions (prior session)
 - `.\gradlew.bat :shared:core-model:allTests :server:signaling:test :server:signaling:build --no-daemon` → BUILD SUCCESSFUL
@@ -79,3 +93,4 @@ None.
 
 ## Next Action
 Read docs/sharing/HANDSHAKE_CONTRACT.md and IMPLEMENTATION_PLAN.md to begin handshake design/implementation phase.
+Verify all module tests pass with full regression.

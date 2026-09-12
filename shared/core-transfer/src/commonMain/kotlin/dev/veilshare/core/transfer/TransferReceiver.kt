@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 interface TransferDecryptor {
     suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce): ByteArray
@@ -18,7 +20,7 @@ interface TransferDecryptor {
 
 interface TransferReceiver {
     suspend fun receive(transferData: TransferData): ReceiveResult
-    fun getImportSource(transferId: TransferId, fileId: dev.veilshare.core.model.FileId): TransferImportSource
+    suspend fun getImportSource(transferId: TransferId, fileId: dev.veilshare.core.model.FileId): TransferImportSource
     fun getProgress(transferId: TransferId): StateFlow<TransferReceiverProgress?>
 }
 
@@ -57,6 +59,14 @@ sealed interface TransferImportProgress {
     data class Error(val error: TransferError) : TransferImportProgress
 }
 
+enum class TransferStateEnum {
+    NEW,
+    RECEIVING,
+    COMPLETE,
+    CANCELLED,
+    FAILED
+}
+
 class InMemoryTransferReceiver(
     private val decryptor: TransferDecryptor,
     private val config: TransferConfig = TransferConfig(),
@@ -64,30 +74,34 @@ class InMemoryTransferReceiver(
 
     private val activeTransfers = mutableMapOf<String, TransferState>()
     private val progressFlows = mutableMapOf<String, MutableStateFlow<TransferReceiverProgress?>>()
+    private val mapMutex = newMutex()
 
     override suspend fun receive(transferData: TransferData): ReceiveResult {
         val transferIdHash = transferData.transferIdHash
-        val state = activeTransfers.getOrPut(transferIdHash) {
-            TransferState(
-                transferIdHash = transferIdHash,
-                fileIdHash = transferData.fileIdHash,
-                totalChunks = transferData.totalChunks,
-                config = config,
-                progressFlow = getOrCreateProgressFlow(transferIdHash),
-            )
+        return mapMutex.withLock {
+            val state = activeTransfers.getOrPut(transferIdHash) {
+                TransferState(
+                    transferIdHash = transferIdHash,
+                    fileIdHash = transferData.fileIdHash,
+                    totalChunks = transferData.totalChunks,
+                    config = config,
+                    progressFlow = getOrCreateProgressFlow(transferIdHash),
+                )
+            }
+            state.processChunk(transferData, decryptor)
         }
-
-        return state.processChunk(transferData, decryptor)
     }
 
-    override fun getImportSource(transferId: TransferId, fileId: dev.veilshare.core.model.FileId): TransferImportSource {
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val state = activeTransfers.get(transferIdHash) ?: throw IllegalStateException("Transfer not found: $transferIdHash")
-        return TransferImportSourceImpl(state, fileId)
+    override suspend fun getImportSource(transferId: TransferId, fileId: dev.veilshare.core.model.FileId): TransferImportSource {
+        val transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
+        return mapMutex.withLock {
+            val state = activeTransfers.get(transferIdHash) ?: throw IllegalStateException("Transfer not found: $transferIdHash")
+            TransferImportSourceImpl(state, fileId)
+        }
     }
 
     override fun getProgress(transferId: TransferId): StateFlow<TransferReceiverProgress?> {
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
+        val transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
         return getOrCreateProgressFlow(transferIdHash)
     }
 
@@ -102,62 +116,116 @@ class InMemoryTransferReceiver(
         val config: TransferConfig,
         val progressFlow: MutableStateFlow<TransferReceiverProgress?>,
     ) {
-        private val receivedChunks = BooleanArray(totalChunks) { false }
-        private val chunkData = Array<ByteArray?>(totalChunks) { null }
+        private val stateMutex = newMutex()
+        private var state: TransferStateEnum = TransferStateEnum.NEW
+        private val receivedChunks: BooleanArray
+        private val chunkData: Array<ByteArray?>
         private var bytesReceived: Long = 0
         private var completed = false
 
+        init {
+            receivedChunks = BooleanArray(totalChunks) { false }
+            chunkData = Array(totalChunks) { null }
+        }
+
         suspend fun processChunk(transferData: TransferData, decryptor: TransferDecryptor): ReceiveResult {
-            if (completed) {
-                return ReceiveResult.Error(TransferError.TransferCancelled("Transfer already completed"))
-            }
-
-            if (transferData.chunkIndex >= totalChunks) {
-                return ReceiveResult.Error(TransferError.InvalidChunkIndex(totalChunks, transferData.chunkIndex))
-            }
-
-            if (receivedChunks[transferData.chunkIndex]) {
-                return ReceiveResult.DuplicateChunk(transferData.chunkIndex)
-            }
-
-            val plaintext: ByteArray
+            stateMutex.lock()
             try {
-                val nonce = Nonce(transferData.nonce)
-                plaintext = decryptor.decrypt(transferData.ciphertext, nonce)
-            } catch (e: Exception) {
-                progressFlow.value = TransferReceiverProgress.Error(TransferError.DecryptionFailed(transferData.chunkIndex))
-                return ReceiveResult.Error(TransferError.DecryptionFailed(transferData.chunkIndex))
+                when (state) {
+                    TransferStateEnum.COMPLETE -> {
+                        return ReceiveResult.Error(TransferError.TransferCancelled("Transfer already completed"))
+                    }
+                    TransferStateEnum.CANCELLED -> {
+                        return ReceiveResult.Error(TransferError.TransferCancelled("Transfer cancelled"))
+                    }
+                    TransferStateEnum.FAILED -> {
+                        return ReceiveResult.Error(TransferError.IoError("Transfer failed"))
+                    }
+                    TransferStateEnum.NEW -> {
+                        state = TransferStateEnum.RECEIVING
+                    }
+                    TransferStateEnum.RECEIVING -> {
+                        // continue processing
+                    }
+                }
+
+                if (transferData.chunkIndex >= totalChunks) {
+                    state = TransferStateEnum.FAILED
+                    return ReceiveResult.Error(TransferError.InvalidChunkIndex(totalChunks, transferData.chunkIndex))
+                }
+
+                if (receivedChunks[transferData.chunkIndex]) {
+                    return ReceiveResult.DuplicateChunk(transferData.chunkIndex)
+                }
+
+                val plaintext: ByteArray
+                try {
+                    val nonce = Nonce(transferData.nonce)
+                    plaintext = decryptor.decrypt(transferData.ciphertext, nonce)
+                } catch (e: Exception) {
+                    state = TransferStateEnum.FAILED
+                    progressFlow.value = TransferReceiverProgress.Error(TransferError.DecryptionFailed(transferData.chunkIndex))
+                    return ReceiveResult.Error(TransferError.DecryptionFailed(transferData.chunkIndex))
+                }
+
+                receivedChunks[transferData.chunkIndex] = true
+                chunkData[transferData.chunkIndex] = plaintext
+                bytesReceived += plaintext.size.toLong()
+
+                progressFlow.value = TransferReceiverProgress.ChunkReceived(
+                    chunkIndex = transferData.chunkIndex,
+                    totalChunks = totalChunks,
+                    bytesReceived = bytesReceived,
+                )
+
+                val isFinal = transferData.chunkIndex == totalChunks - 1
+                val allReceived = receivedChunks.all { it }
+
+                if (allReceived) {
+                    completed = true
+                    state = TransferStateEnum.COMPLETE
+                    progressFlow.value = TransferReceiverProgress.TransferComplete(totalChunks, bytesReceived)
+                    return ReceiveResult.TransferComplete(totalChunks)
+                }
+
+                state = TransferStateEnum.RECEIVING
+                return ReceiveResult.ChunkAccepted(transferData.chunkIndex, isFinal)
+            } finally {
+                stateMutex.unlock()
             }
-
-            receivedChunks[transferData.chunkIndex] = true
-            chunkData[transferData.chunkIndex] = plaintext
-            bytesReceived += plaintext.size.toLong()
-
-            progressFlow.value = TransferReceiverProgress.ChunkReceived(
-                chunkIndex = transferData.chunkIndex,
-                totalChunks = totalChunks,
-                bytesReceived = bytesReceived,
-            )
-
-            val isFinal = transferData.chunkIndex == totalChunks - 1
-            val allReceived = receivedChunks.all { it }
-
-            if (allReceived) {
-                completed = true
-                progressFlow.value = TransferReceiverProgress.TransferComplete(totalChunks, bytesReceived)
-                return ReceiveResult.TransferComplete(totalChunks)
-            }
-
-            return ReceiveResult.ChunkAccepted(transferData.chunkIndex, isFinal)
         }
 
-        fun getChunk(chunkIndex: Int): ByteArray? {
-            return chunkData[chunkIndex]
+        suspend fun getChunk(chunkIndex: Int): ByteArray? {
+            return stateMutex.withLock { chunkData[chunkIndex] }
         }
 
-        fun isComplete(): Boolean = completed
+        suspend fun isComplete(): Boolean = stateMutex.withLock { completed }
 
-        fun getTotalBytes(): Long = bytesReceived
+        suspend fun getTotalBytes(): Long = stateMutex.withLock { bytesReceived }
+
+        fun getTotalBytesSync(): Long = bytesReceived
+
+        suspend fun cancel(): Boolean = stateMutex.withLock {
+            if (state == TransferStateEnum.NEW || state == TransferStateEnum.RECEIVING) {
+                state = TransferStateEnum.CANCELLED
+                true
+            } else {
+                false
+            }
+        }
+
+        suspend fun fail(): Boolean = stateMutex.withLock {
+            if (state != TransferStateEnum.COMPLETE && state != TransferStateEnum.CANCELLED) {
+                state = TransferStateEnum.FAILED
+                true
+            } else {
+                false
+            }
+        }
+
+        suspend fun isCancelled(): Boolean = stateMutex.withLock { state == TransferStateEnum.CANCELLED }
+        suspend fun isFailed(): Boolean = stateMutex.withLock { state == TransferStateEnum.FAILED }
+        suspend fun isCompleted(): Boolean = stateMutex.withLock { state == TransferStateEnum.COMPLETE }
     }
 
     private inner class TransferImportSourceImpl(
@@ -167,21 +235,23 @@ class InMemoryTransferReceiver(
         override val transferId: TransferId = TransferId(state.transferIdHash)
         override val displayName: String = "received-file"
         override val mimeHint: String? = null
-        override val sizeHint: Long = state.getTotalBytes()
         private var currentChunkIndex = 0
         private var closed = false
 
+        override val sizeHint: Long
+            get() = state.getTotalBytesSync()
+
         override fun getProgress(): StateFlow<TransferImportProgress> {
             val flow = MutableStateFlow<TransferImportProgress>(TransferImportProgress.Preparing(state.totalChunks))
-            
+
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                 for (i in 0 until state.totalChunks) {
                     flow.value = TransferImportProgress.ChunkReady(i, state.totalChunks)
                     delay(1) // yield
                 }
-                flow.value = TransferImportProgress.Complete(state.totalChunks, state.getTotalBytes())
+                flow.value = TransferImportProgress.Complete(state.totalChunks, state.getTotalBytesSync())
             }
-            
+
             return flow
         }
 

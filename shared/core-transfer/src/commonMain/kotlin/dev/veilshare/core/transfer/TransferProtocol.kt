@@ -1,6 +1,7 @@
 package dev.veilshare.core.transfer
 
 import dev.veilshare.core.crypto.AuthenticatedCipher
+import dev.veilshare.core.crypto.Hash
 import dev.veilshare.core.crypto.Nonce
 import dev.veilshare.core.crypto.SecureRandom
 import dev.veilshare.core.crypto.SensitiveBytes
@@ -75,3 +76,4 @@ sealed interface TransferProgress {
     data class ChunkAcknowledged(val chunkIndex: Int, val totalChunks: Int) : TransferProgress
     data class TransferComplete(val totalChunks: Int, val totalBytes: Long) : TransferProgress
 }
+

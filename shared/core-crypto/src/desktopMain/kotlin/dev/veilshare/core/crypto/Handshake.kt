@@ -1,90 +1,34 @@
 package dev.veilshare.core.crypto
 
+import dev.veilshare.core.model.SessionId
+import dev.veilshare.core.model.SharingIdentityId
 import kotlinx.coroutines.runBlocking
 import java.security.MessageDigest
 import java.util.Base64
 
-data class HandshakeTranscript(
-    val helloProtocolVersion: Int,
-    val helloSenderSharingIdentityIdHash: String,
-    val helloSessionIdHash: String,
-    val confirmProtocolVersion: Int,
-    val confirmReceiverSharingIdentityIdHash: String,
-    val confirmSessionIdHash: String,
-    val confirmEphemeralPublicKeyHash: String,
-    val ackProtocolVersion: Int,
-    val ackSessionIdHash: String,
-    val ackEphemeralPublicKeyHash: String,
-    val ackTranscriptHash: String,
-) {
-    fun toByteArray(): ByteArray {
-        val builder = StringBuilder()
-        builder.append(helloProtocolVersion)
-        builder.append(helloSenderSharingIdentityIdHash)
-        builder.append(helloSessionIdHash)
-        builder.append(confirmProtocolVersion)
-        builder.append(confirmReceiverSharingIdentityIdHash)
-        builder.append(confirmSessionIdHash)
-        builder.append(confirmEphemeralPublicKeyHash)
-        builder.append(ackProtocolVersion)
-        builder.append(ackSessionIdHash)
-        builder.append(ackEphemeralPublicKeyHash)
-        builder.append(ackTranscriptHash)
-        return builder.toString().encodeToByteArray()
-    }
-
-    fun sha256(): String {
+actual object Hash {
+    actual fun sha256(input: ByteArray): ByteArray {
         val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(toByteArray()).toHex()
-    }
-
-    fun toByteArrayWithoutAckTranscriptHash(): ByteArray {
-        val builder = StringBuilder()
-        builder.append(helloProtocolVersion)
-        builder.append(helloSenderSharingIdentityIdHash)
-        builder.append(helloSessionIdHash)
-        builder.append(confirmProtocolVersion)
-        builder.append(confirmReceiverSharingIdentityIdHash)
-        builder.append(confirmSessionIdHash)
-        builder.append(confirmEphemeralPublicKeyHash)
-        builder.append(ackProtocolVersion)
-        builder.append(ackSessionIdHash)
-        builder.append(ackEphemeralPublicKeyHash)
-        return builder.toString().encodeToByteArray()
-    }
-
-    fun sha256WithoutAckTranscriptHash(): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(toByteArrayWithoutAckTranscriptHash()).toHex()
+        return digest.digest(input)
     }
 }
 
-data class HandshakeKeys(
-    val senderToReceiverKey: ByteArray,
-    val receiverToSenderKey: ByteArray,
-    val transcriptHash: String,
-)
+actual fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
-object HandshakeProtocol {
-    private const val TRANSCRIPT_BINDING_SALT = "transcript-binding-v1"
-    private const val S2R_KEY_SALT = "s2r-key-v1"
-    private const val R2S_KEY_SALT = "r2s-key-v1"
+actual fun ByteArray.toBase64(): String = Base64.getEncoder().encodeToString(this)
 
-    fun sha256(input: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(input).toHex()
-    }
+actual fun String.decodeFromBase64(): ByteArray = Base64.getDecoder().decode(this)
 
-    fun sha256(input: String): String = sha256(input.encodeToByteArray())
+class JvmHandshakeProtocol : HandshakeProtocol {
 
-    fun createSessionHello(
-        sharingIdentityId: dev.veilshare.core.model.SharingIdentityId,
+    override fun createSessionHello(
+        sharingIdentityId: SharingIdentityId,
         sharingKeyPair: Ed25519KeyPair,
-        sessionId: dev.veilshare.core.model.SessionId,
+        sessionId: SessionId,
         signer: Ed25519Signer,
     ): dev.veilshare.core.model.SessionHello {
-        val sharingIdentityIdHash = sha256(sharingIdentityId.value)
-        val sessionIdHash = sha256(sessionId.value)
+        val sharingIdentityIdHash = Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex()
+        val sessionIdHash = Hash.sha256(sessionId.value.encodeToByteArray()).toHex()
         val message = "SESSION_HELLO|$sharingIdentityIdHash|$sessionIdHash|${dev.veilshare.core.model.SharingProtocol.VERSION}".encodeToByteArray()
         val signature = signer.sign(sharingKeyPair.privateKey, message)
         return dev.veilshare.core.model.SessionHello(
@@ -96,12 +40,13 @@ object HandshakeProtocol {
         )
     }
 
-    fun verifySessionHello(
+    override fun verifySessionHello(
         hello: dev.veilshare.core.model.SessionHello,
         expectedSharingIdentityIdHash: String,
         expectedSessionIdHash: String,
+        expectedSenderPublicKey: Ed25519PublicKey,
         signer: Ed25519Signer,
-    ): Ed25519PublicKey {
+    ) {
         if (hello.protocolVersion != dev.veilshare.core.model.SharingProtocol.VERSION) {
             throw IllegalArgumentException("Protocol version mismatch")
         }
@@ -111,24 +56,26 @@ object HandshakeProtocol {
         if (hello.sessionIdHash != expectedSessionIdHash) {
             throw IllegalArgumentException("Session ID hash mismatch")
         }
-        val publicKey = Ed25519PublicKey(hello.sharingPublicKey.decodeFromBase64())
         val message = "SESSION_HELLO|${hello.sharingIdentityIdHash}|${hello.sessionIdHash}|${hello.protocolVersion}".encodeToByteArray()
         val signature = hello.signature.decodeFromBase64()
-        if (!signer.verify(publicKey, message, signature)) {
+        if (!signer.verify(expectedSenderPublicKey, message, signature)) {
             throw IllegalArgumentException("Invalid signature on SESSION_HELLO")
         }
-        return publicKey
+        val actualPublicKey = Ed25519PublicKey(hello.sharingPublicKey.decodeFromBase64())
+        if (!actualPublicKey.bytes.contentEquals(expectedSenderPublicKey.bytes)) {
+            throw IllegalArgumentException("Sender public key does not match expected peer identity")
+        }
     }
 
-    fun createSessionConfirm(
-        sharingIdentityId: dev.veilshare.core.model.SharingIdentityId,
+    override fun createSessionConfirm(
+        sharingIdentityId: SharingIdentityId,
         sharingKeyPair: Ed25519KeyPair,
-        sessionId: dev.veilshare.core.model.SessionId,
+        sessionId: SessionId,
         receiverEphemeralKeyPair: X25519KeyPair,
         signer: Ed25519Signer,
     ): dev.veilshare.core.model.SessionConfirm {
-        val sharingIdentityIdHash = sha256(sharingIdentityId.value)
-        val sessionIdHash = sha256(sessionId.value)
+        val sharingIdentityIdHash = Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex()
+        val sessionIdHash = Hash.sha256(sessionId.value.encodeToByteArray()).toHex()
         val message = "SESSION_CONFIRM|$sharingIdentityIdHash|$sessionIdHash|${receiverEphemeralKeyPair.publicKey.bytes.toBase64()}|${dev.veilshare.core.model.SharingProtocol.VERSION}".encodeToByteArray()
         val signature = signer.sign(sharingKeyPair.privateKey, message)
         return dev.veilshare.core.model.SessionConfirm(
@@ -141,12 +88,14 @@ object HandshakeProtocol {
         )
     }
 
-    fun verifySessionConfirm(
+    override fun verifySessionConfirm(
         confirm: dev.veilshare.core.model.SessionConfirm,
         expectedSharingIdentityIdHash: String,
         expectedSessionIdHash: String,
+        expectedReceiverEphemeralPublicKey: X25519PublicKey,
+        expectedReceiverIdentityPublicKey: Ed25519PublicKey,
         signer: Ed25519Signer,
-    ): Pair<Ed25519PublicKey, X25519PublicKey> {
+    ) {
         if (confirm.protocolVersion != dev.veilshare.core.model.SharingProtocol.VERSION) {
             throw IllegalArgumentException("Protocol version mismatch")
         }
@@ -156,45 +105,29 @@ object HandshakeProtocol {
         if (confirm.sessionIdHash != expectedSessionIdHash) {
             throw IllegalArgumentException("Session ID hash mismatch")
         }
-        val sharingPublicKey = Ed25519PublicKey(confirm.sharingPublicKey.decodeFromBase64())
-        val receiverEphemeralPublicKey = X25519PublicKey(confirm.receiverEphemeralPublicKey.decodeFromBase64())
         val message = "SESSION_CONFIRM|${confirm.sharingIdentityIdHash}|${confirm.sessionIdHash}|${confirm.receiverEphemeralPublicKey}|${confirm.protocolVersion}".encodeToByteArray()
         val signature = confirm.signature.decodeFromBase64()
-        if (!signer.verify(sharingPublicKey, message, signature)) {
+        if (!signer.verify(expectedReceiverIdentityPublicKey, message, signature)) {
             throw IllegalArgumentException("Invalid signature on SESSION_CONFIRM")
         }
-        return sharingPublicKey to receiverEphemeralPublicKey
+        val actualEphemeralPublicKey = X25519PublicKey(confirm.receiverEphemeralPublicKey.decodeFromBase64())
+        if (!actualEphemeralPublicKey.bytes.contentEquals(expectedReceiverEphemeralPublicKey.bytes)) {
+            throw IllegalArgumentException("Receiver ephemeral public key does not match expected")
+        }
+        val actualIdentityPublicKey = Ed25519PublicKey(confirm.sharingPublicKey.decodeFromBase64())
+        if (!actualIdentityPublicKey.bytes.contentEquals(expectedReceiverIdentityPublicKey.bytes)) {
+            throw IllegalArgumentException("Receiver identity public key does not match expected peer identity")
+        }
     }
 
-    fun createSessionConfirmAck(
-        sessionId: dev.veilshare.core.model.SessionId,
+    override fun createSessionConfirmAck(
+        sessionId: SessionId,
         senderEphemeralKeyPair: X25519KeyPair,
-        helloProtocolVersion: Int,
-        helloSenderSharingIdentityIdHash: String,
-        helloSessionIdHash: String,
-        confirmProtocolVersion: Int,
-        confirmReceiverSharingIdentityIdHash: String,
-        confirmSessionIdHash: String,
-        confirmEphemeralPublicKeyHash: String,
+        transcript: HandshakeTranscript,
     ): dev.veilshare.core.model.SessionConfirmAck {
-        val sessionIdHash = sha256(sessionId.value)
-        val senderEphemeralPublicKeyHash = sha256(senderEphemeralKeyPair.publicKey.bytes)
-        
-        val transcript = HandshakeTranscript(
-            helloProtocolVersion = helloProtocolVersion,
-            helloSenderSharingIdentityIdHash = helloSenderSharingIdentityIdHash,
-            helloSessionIdHash = helloSessionIdHash,
-            confirmProtocolVersion = confirmProtocolVersion,
-            confirmReceiverSharingIdentityIdHash = confirmReceiverSharingIdentityIdHash,
-            confirmSessionIdHash = confirmSessionIdHash,
-            confirmEphemeralPublicKeyHash = confirmEphemeralPublicKeyHash,
-            ackProtocolVersion = dev.veilshare.core.model.SharingProtocol.VERSION,
-            ackSessionIdHash = sessionIdHash,
-            ackEphemeralPublicKeyHash = senderEphemeralPublicKeyHash,
-            ackTranscriptHash = "",
-        )
-        
-        val transcriptHash = transcript.sha256WithoutAckTranscriptHash()
+        val sessionIdHash = Hash.sha256(sessionId.value.encodeToByteArray()).toHex()
+        val senderEphemeralPublicKeyHash = Hash.sha256(senderEphemeralKeyPair.publicKey.bytes).toHex()
+        val transcriptHash = transcript.computeTranscriptHash()
         return dev.veilshare.core.model.SessionConfirmAck(
             sessionIdHash = sessionIdHash,
             senderEphemeralPublicKey = senderEphemeralKeyPair.publicKey.bytes.toBase64(),
@@ -203,17 +136,11 @@ object HandshakeProtocol {
         )
     }
 
-    fun verifySessionConfirmAck(
+    override fun verifySessionConfirmAck(
         ack: dev.veilshare.core.model.SessionConfirmAck,
         expectedSessionIdHash: String,
         expectedSenderEphemeralPublicKeyHash: String,
-        helloProtocolVersion: Int,
-        helloSenderSharingIdentityIdHash: String,
-        helloSessionIdHash: String,
-        confirmProtocolVersion: Int,
-        confirmReceiverSharingIdentityIdHash: String,
-        confirmSessionIdHash: String,
-        confirmEphemeralPublicKeyHash: String,
+        transcript: HandshakeTranscript,
     ): X25519PublicKey {
         if (ack.protocolVersion != dev.veilshare.core.model.SharingProtocol.VERSION) {
             throw IllegalArgumentException("Protocol version mismatch")
@@ -222,41 +149,26 @@ object HandshakeProtocol {
             throw IllegalArgumentException("Session ID hash mismatch")
         }
         val senderEphemeralPublicKey = X25519PublicKey(ack.senderEphemeralPublicKey.decodeFromBase64())
-        if (sha256(senderEphemeralPublicKey.bytes) != expectedSenderEphemeralPublicKeyHash) {
+        if (Hash.sha256(senderEphemeralPublicKey.bytes).toHex() != expectedSenderEphemeralPublicKeyHash) {
             throw IllegalArgumentException("Sender ephemeral public key hash mismatch")
         }
-        
-        val transcript = HandshakeTranscript(
-            helloProtocolVersion = helloProtocolVersion,
-            helloSenderSharingIdentityIdHash = helloSenderSharingIdentityIdHash,
-            helloSessionIdHash = helloSessionIdHash,
-            confirmProtocolVersion = confirmProtocolVersion,
-            confirmReceiverSharingIdentityIdHash = confirmReceiverSharingIdentityIdHash,
-            confirmSessionIdHash = confirmSessionIdHash,
-            confirmEphemeralPublicKeyHash = confirmEphemeralPublicKeyHash,
-            ackProtocolVersion = dev.veilshare.core.model.SharingProtocol.VERSION,
-            ackSessionIdHash = ack.sessionIdHash,
-            ackEphemeralPublicKeyHash = expectedSenderEphemeralPublicKeyHash,
-            ackTranscriptHash = "",
-        )
-        
-        val expectedTranscriptHash = transcript.sha256WithoutAckTranscriptHash()
+        val expectedTranscriptHash = transcript.computeTranscriptHash()
         if (ack.transcriptHash != expectedTranscriptHash) {
             throw IllegalArgumentException("Transcript hash mismatch")
         }
         return senderEphemeralPublicKey
     }
 
-    suspend fun deriveHandshakeKeys(
+    override suspend fun deriveHandshakeKeys(
         senderEphemeralPrivateKey: X25519PrivateKey,
         receiverEphemeralPublicKey: X25519PublicKey,
         keyAgreement: X25519KeyAgreement,
         keyDeriver: KeyDeriver,
     ): HandshakeKeys = runBlocking {
         val sharedSecret = keyAgreement.deriveSharedSecret(senderEphemeralPrivateKey, receiverEphemeralPublicKey)
-        val transcriptKey = deriveHkdf(keyDeriver, sharedSecret, TRANSCRIPT_BINDING_SALT.encodeToByteArray(), 32)
-        val s2rKey = deriveHkdf(keyDeriver, sharedSecret, S2R_KEY_SALT.encodeToByteArray(), 32)
-        val r2sKey = deriveHkdf(keyDeriver, sharedSecret, R2S_KEY_SALT.encodeToByteArray(), 32)
+        val transcriptKey = deriveHkdf(keyDeriver, sharedSecret, "transcript-binding-v1".encodeToByteArray(), 32)
+        val s2rKey = deriveHkdf(keyDeriver, sharedSecret, "s2r-key-v1".encodeToByteArray(), 32)
+        val r2sKey = deriveHkdf(keyDeriver, sharedSecret, "r2s-key-v1".encodeToByteArray(), 32)
         HandshakeKeys(
             senderToReceiverKey = s2rKey.copy(),
             receiverToSenderKey = r2sKey.copy(),
@@ -268,7 +180,3 @@ object HandshakeProtocol {
         return keyDeriver.derive(ikm, salt, outputBytes)
     }
 }
-
-fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-fun ByteArray.toBase64(): String = Base64.getEncoder().encodeToString(this)
-fun String.decodeFromBase64(): ByteArray = Base64.getDecoder().decode(this)

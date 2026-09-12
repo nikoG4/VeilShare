@@ -1,6 +1,7 @@
 package dev.veilshare.core.crypto
 
 import java.security.SecureRandom as JcaSecureRandom
+import java.util.Base64
 import org.bouncycastle.crypto.InvalidCipherTextException
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.generators.HKDFBytesGenerator

@@ -31,8 +31,8 @@ class DefaultTransferSender(
         encryptor: TransferEncryptor,
         sender: TransferNetworkSender,
     ): TransferResult {
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
+        val fileIdHash = TransferPlatform.sha256ToHex(fileId.value.encodeToByteArray())
         
         val totalChunks = calculateTotalChunks(source.fileSize)
         require(totalChunks <= config.maxChunks) { "File too large: $totalChunks chunks exceeds max ${config.maxChunks}" }

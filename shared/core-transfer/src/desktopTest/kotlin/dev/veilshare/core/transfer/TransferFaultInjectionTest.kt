@@ -1,9 +1,11 @@
 package dev.veilshare.core.transfer
 
 import dev.veilshare.core.crypto.AuthenticatedCipher
+import dev.veilshare.core.crypto.Hash
 import dev.veilshare.core.crypto.Nonce
 import dev.veilshare.core.crypto.SecureRandom
 import dev.veilshare.core.crypto.SensitiveBytes
+import dev.veilshare.core.crypto.toHex
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferId
@@ -37,8 +39,8 @@ class TransferFaultInjectionTest {
         
         val transferId = TransferId("test-disconnect")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         // Receive first chunk only (simulating network disconnect)
         val chunk0 = dev.veilshare.core.model.TransferData(
@@ -71,8 +73,8 @@ class TransferFaultInjectionTest {
         
         val transferId = TransferId("test-corrupt")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         val chunk0 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -95,8 +97,8 @@ class TransferFaultInjectionTest {
         
         val transferId = TransferId("test-cancel")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         // Receive two chunks
         for (i in 0..1) {
@@ -129,8 +131,8 @@ class TransferFaultInjectionTest {
         
         val transferId = TransferId("test-duplicate")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         val chunk = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -154,8 +156,8 @@ class TransferFaultInjectionTest {
         
         val transferId = TransferId("test-outoforder")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         // Send chunk 1 first
         val chunk1 = dev.veilshare.core.model.TransferData(
@@ -169,7 +171,7 @@ class TransferFaultInjectionTest {
         val result1 = receiver.receive(chunk1)
         assertTrue(result1 is dev.veilshare.core.transfer.ReceiveResult.ChunkAccepted)
         
-        // Send chunk 0
+        // Then send chunk 0
         val chunk0 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
             fileIdHash = fileIdHash,
@@ -181,7 +183,7 @@ class TransferFaultInjectionTest {
         val result0 = receiver.receive(chunk0)
         assertTrue(result0 is dev.veilshare.core.transfer.ReceiveResult.ChunkAccepted)
         
-        // Send chunk 2 - completes transfer
+        // Then send chunk 2 - completes transfer
         val chunk2 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
             fileIdHash = fileIdHash,
@@ -201,8 +203,8 @@ class TransferFaultInjectionTest {
         
         val transferId = TransferId("test-invalid-index")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         // TransferData constructor validates chunkIndex < totalChunks
         assertFailsWith<IllegalArgumentException> {

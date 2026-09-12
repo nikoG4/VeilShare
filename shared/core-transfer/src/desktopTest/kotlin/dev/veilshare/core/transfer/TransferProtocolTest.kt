@@ -1,9 +1,11 @@
 package dev.veilshare.core.transfer
 
 import dev.veilshare.core.crypto.AuthenticatedCipher
+import dev.veilshare.core.crypto.Hash
 import dev.veilshare.core.crypto.Nonce
 import dev.veilshare.core.crypto.SecureRandom
 import dev.veilshare.core.crypto.SensitiveBytes
+import dev.veilshare.core.crypto.toHex
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.TransferId
 import kotlinx.coroutines.test.runTest
@@ -77,8 +79,8 @@ class TransferProtocolTest {
         
         val transferId = TransferId("test-transfer")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         // Send chunk 0
         val chunk0 = dev.veilshare.core.model.TransferData(
@@ -126,8 +128,8 @@ class TransferProtocolTest {
         
         val transferId = TransferId("test-transfer")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         val chunk = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -151,8 +153,8 @@ class TransferProtocolTest {
         
         val transferId = TransferId("test-transfer")
         val fileId = FileId("test-file")
-        val transferIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(transferId.value)
-        val fileIdHash = dev.veilshare.core.crypto.HandshakeProtocol.sha256(fileId.value)
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
         
         // Send chunk 1 first (out of order)
         val chunk1 = dev.veilshare.core.model.TransferData(
