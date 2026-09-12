@@ -12,6 +12,7 @@ class FixedWindowRateLimiter(
         require(maxEvents > 0)
     }
 
+    @Synchronized
     fun allow(key: String): Boolean {
         require(key.isNotBlank())
         val now = clock.nowMillis()
@@ -29,6 +30,7 @@ class FixedWindowRateLimiter(
         return true
     }
 
+    @Synchronized
     fun cleanupExpired(): Int {
         val now = clock.nowMillis()
         val expired = windows.filterValues { now >= it.startedAtMillis + windowMillis }.keys.toList()
@@ -58,6 +60,7 @@ class FixedWindowBudgetLimiter(
         require(maxCost > 0)
     }
 
+    @Synchronized
     fun allow(key: String, cost: Long): Boolean {
         require(key.isNotBlank())
         require(cost >= 0)
@@ -86,6 +89,7 @@ class FixedWindowBudgetLimiter(
         return true
     }
 
+    @Synchronized
     fun cleanupExpired(): Int {
         val now = clock.nowMillis()
         val expired = windows.filterValues { now >= it.startedAtMillis + windowMillis }.keys.toList()
