@@ -125,8 +125,9 @@ class TrustedContactsTest {
     fun fingerprintFormattingIsHumanReadableWithoutChangingTrustValue() {
         val fingerprint = candidate("peer-format", keyMarker = 8).fingerprint
         val displayed = fingerprint.toDisplayGroups(4)
+        val expected = fingerprint.value.uppercase().chunked(4).joinToString(" ")
 
-        assertEquals(fingerprint.value.uppercase().replace(Regex("(.{4})(?!$)"), "$1 "), displayed)
+        assertEquals(expected, displayed)
         assertEquals(64 / 4, displayed.split(' ').size)
     }
 
