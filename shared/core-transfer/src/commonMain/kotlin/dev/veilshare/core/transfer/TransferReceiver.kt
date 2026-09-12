@@ -243,7 +243,7 @@ class InMemoryTransferReceiver(
                 )
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Throwable) {
+            } catch (_: Exception) {
                 state = TransferStateEnum.FAILED
                 val error = TransferError.DecryptionFailed(transferData.chunkIndex)
                 progressFlow.value = TransferReceiverProgress.Error(error)
@@ -395,7 +395,7 @@ class InMemoryTransferReceiver(
                         )
                     } catch (e: CancellationException) {
                         throw e
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
                         val error = TransferError.DecryptionFailed(encrypted.chunkIndex)
                         importProgress.value = TransferImportProgress.Error(error)
                         cleanupOnce()
