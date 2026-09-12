@@ -196,6 +196,7 @@ class InMemoryTransferReceiver(
         private val encryptedChunks = arrayOfNulls<EncryptedChunk>(totalChunks)
         private var receivedCount = 0
         private var bytesReceived = 0L
+        private var bufferedCiphertextBytes = 0L
 
         suspend fun processChunk(
             transferData: TransferData,
@@ -225,6 +226,17 @@ class InMemoryTransferReceiver(
 
             if (receivedChunks[transferData.chunkIndex]) {
                 return@withLock ReceiveResult.DuplicateChunk(transferData.chunkIndex)
+            }
+
+            val prospectiveBufferedBytes = bufferedCiphertextBytes + transferData.ciphertext.size.toLong()
+            if (prospectiveBufferedBytes > config.maxTransferBytes) {
+                state = TransferStateEnum.FAILED
+                val error = TransferError.TransferTooLarge(
+                    maxBytes = config.maxTransferBytes,
+                    actualBytes = prospectiveBufferedBytes,
+                )
+                progressFlow.value = TransferReceiverProgress.Error(error)
+                return@withLock ReceiveResult.Error(error)
             }
 
             val aad = TransferProtocol.createDataAad(
@@ -262,6 +274,7 @@ class InMemoryTransferReceiver(
             )
             receivedCount++
             bytesReceived += plaintextSize.toLong()
+            bufferedCiphertextBytes = prospectiveBufferedBytes
 
             progressFlow.value = TransferReceiverProgress.ChunkReceived(
                 chunkIndex = transferData.chunkIndex,
@@ -316,6 +329,7 @@ class InMemoryTransferReceiver(
                 receivedChunks[i] = false
             }
             receivedCount = 0
+            bufferedCiphertextBytes = 0L
         }
     }
 
