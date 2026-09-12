@@ -5,6 +5,7 @@ import dev.veilshare.core.crypto.SensitiveBytes
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferId
+import dev.veilshare.core.model.TransferOffer
 import dev.veilshare.core.vault.DesktopLocalVaultService
 import dev.veilshare.core.vault.LocalUnlockResult
 import dev.veilshare.core.vault.VaultItem
@@ -52,15 +53,21 @@ class TransferVaultE2ETest {
             assertEquals(plaintext.size.toLong(), result.totalBytes)
             assertIs<TransferReceiverProgress.TransferComplete>(receiver.getProgress(transferId).value)
 
+            val offer = TransferOffer(
+                fileId = fileId,
+                displayName = "received-e2e.bin",
+                mimeHint = "application/octet-stream",
+                sizeBytes = plaintext.size.toLong(),
+                totalChunks = result.totalChunks,
+            )
+
             val service = DesktopLocalVaultService(root)
             service.createPair("3101".toCharArray(), "4102".toCharArray())
             val vault = assertIs<LocalUnlockResult.Ready>(service.unlock("3101".toCharArray())).vault
             val imported = ReceivedTransferVaultImporter(receiver).importCompleted(
                 transferId = transferId,
-                fileId = fileId,
+                offer = offer,
                 vault = vault,
-                displayName = "received-e2e.bin",
-                mimeHint = "application/octet-stream",
             )
 
             assertEquals("received-e2e.bin", imported.displayName)
@@ -82,6 +89,52 @@ class TransferVaultE2ETest {
             assertEquals("received-e2e.bin", durable.displayName)
             assertContentEquals(plaintext, readAll(reopened, durable))
             reopened.close()
+        } finally {
+            sessionKey.close()
+            plaintext.fill(0)
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `offer size mismatch is rejected before transfer is consumed`() = runTest {
+        val root = Files.createTempDirectory("transfer-vault-size-")
+        val crypto = DesktopProductionCrypto.create()
+        val sessionKey = SensitiveBytes(ByteArray(32) { index -> (index + 21).toByte() })
+        val transferId = TransferId("size-transfer")
+        val fileId = FileId("size-file")
+        val plaintext = "authenticated-size".encodeToByteArray()
+
+        try {
+            val receiver = InMemoryTransferReceiver(DefaultTransferDecryptor(crypto.cipher, sessionKey))
+            DefaultTransferSender(crypto.random).send(
+                transferId = transferId,
+                fileId = fileId,
+                source = ByteArrayTransferSource(plaintext),
+                encryptor = DefaultTransferEncryptor(crypto.cipher, sessionKey),
+                sender = LoopbackNetwork(receiver),
+            )
+
+            val service = DesktopLocalVaultService(root)
+            service.createPair("7101".toCharArray(), "8102".toCharArray())
+            val vault = assertIs<LocalUnlockResult.Ready>(service.unlock("7101".toCharArray())).vault
+            val importer = ReceivedTransferVaultImporter(receiver)
+
+            val wrongOffer = TransferOffer(
+                fileId = fileId,
+                displayName = "payload.bin",
+                sizeBytes = plaintext.size.toLong() + 1,
+                totalChunks = 1,
+            )
+            assertFailsWith<IllegalArgumentException> {
+                importer.importCompleted(transferId, wrongOffer, vault)
+            }
+
+            // Size mismatch is checked before openRead(), so the authenticated transfer remains usable.
+            val correctOffer = wrongOffer.copy(sizeBytes = plaintext.size.toLong())
+            val item = importer.importCompleted(transferId, correctOffer, vault)
+            assertContentEquals(plaintext, readAll(vault, item))
+            vault.close()
         } finally {
             sessionKey.close()
             plaintext.fill(0)
