@@ -39,6 +39,9 @@ class DefaultTransferSender(
         val totalChunks = calculateTotalChunks(source.fileSize)
 
         require(totalChunks > 0) { "Empty files are not supported by Sharing V1" }
+        require(source.fileSize <= config.maxTransferBytes) {
+            "File too large: ${source.fileSize} bytes exceeds safe in-memory transfer cap ${config.maxTransferBytes}"
+        }
         require(totalChunks <= config.maxChunks) {
             "File too large: $totalChunks chunks exceeds max ${config.maxChunks}"
         }
