@@ -18,6 +18,7 @@ data class SignalingEnvelope(
     val messageId: MessageId,
     val type: MessageType,
     val sessionId: SessionId? = null,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val payload: ByteArray = ByteArray(0),
 ) {
     init {
@@ -138,6 +139,7 @@ enum class LookupStatus {
 data class RelayRequest(
     val toReferenceCode: ReferenceCode,
     val sessionId: SessionId,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val opaquePayload: ByteArray,
     val protocolVersion: Int = SharingProtocol.VERSION,
 ) {
@@ -178,6 +180,7 @@ data class PeerEnvelope(
     val messageType: PeerMessageType,
     val sessionId: SessionId,
     val transferId: TransferId,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val payload: ByteArray,
 ) {
     init {
@@ -243,7 +246,9 @@ data class TransferData(
     val fileIdHash: String,
     val chunkIndex: Int,
     val totalChunks: Int,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val ciphertext: ByteArray,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val nonce: ByteArray,
     val fragmentIndex: Int = 0,
     val fragmentCount: Int = 1,
