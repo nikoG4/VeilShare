@@ -21,7 +21,6 @@ import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
-import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.serialization.encodeToString
@@ -36,7 +35,17 @@ class SignalingServerState(
     val presence = PresenceRegistry(clock, limits)
     val sessions = SessionRegistry(clock, limits)
     val lookupLimiter = FixedWindowRateLimiter(clock, limits.lookupWindowMillis, limits.maxLookupsPerWindow)
+
+    // Reserved for explicit session-establishment operations. RELAY must not consume this
+    // budget because a legitimate encrypted chunk can require many transport fragments.
     val sessionLimiter = FixedWindowRateLimiter(clock, limits.sessionCreateWindowMillis, limits.maxSessionCreatesPerWindow)
+
+    val relayLimiter = FixedWindowBudgetLimiter(
+        clock = clock,
+        windowMillis = limits.relayWindowMillis,
+        maxEvents = limits.maxRelayMessagesPerWindow,
+        maxCost = limits.maxRelayPayloadBytesPerWindow,
+    )
     val sockets = ConcurrentHashMap<ConnectionId, DefaultWebSocketServerSession>()
 }
 
@@ -58,6 +67,9 @@ fun Application.signalingModule(state: SignalingServerState = SignalingServerSta
                         continue
                     }
                     val text = frame.readText()
+                    // SignalingEnvelope.payload is Base64 on the JSON wire, so the outer text
+                    // may legitimately exceed the decoded 64 KiB payload cap by ~4/3.
+                    // 2x remains a conservative hard bound against oversized text frames.
                     if (text.encodeToByteArray().size > SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES * 2) {
                         sendError(MessageId("unknown"), ErrorCode.INVALID_MESSAGE, "Frame too large")
                         continue
@@ -158,11 +170,16 @@ private suspend fun DefaultWebSocketServerSession.handleRelay(
     connectionId: ConnectionId,
     envelope: SignalingEnvelope,
 ) {
-    if (!state.sessionLimiter.allow(connectionId.value)) {
-        sendError(envelope.messageId, ErrorCode.RATE_LIMITED, "Rate limited")
+    val request = decodePayload<RelayRequest>(envelope)
+
+    // Rate-limit the data plane by both messages and actual decoded request bytes.
+    // This permits bounded fragmentation while preventing an authenticated connection
+    // from relaying unbounded traffic in one window.
+    if (!state.relayLimiter.allow(connectionId.value, envelope.payload.size.toLong())) {
+        sendError(envelope.messageId, ErrorCode.RATE_LIMITED, "Relay rate limited")
         return
     }
-    val request = decodePayload<RelayRequest>(envelope)
+
     val target = state.presence.lookup(request.toReferenceCode)
     val socket = target?.let { state.sockets[it.connectionId] }
     if (socket == null) {
@@ -196,6 +213,6 @@ private suspend fun DefaultWebSocketServerSession.sendError(
             messageId = messageId,
             type = MessageType.ERROR,
             payload = json.encodeToString(error).encodeToByteArray(),
-        )
+        ),
     )
 }
