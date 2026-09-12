@@ -13,7 +13,12 @@ object TransferProtocol {
     const val MAX_BUFFERED_CIPHERTEXT_BYTES = 64L * 1024L * 1024L
     const val AEAD_OVERHEAD_ALLOWANCE = 64
 
-    // With Base64 wire encoding, a 1 MiB crypto chunk normally needs ~90 fragments
+    // Incomplete transfers must not occupy the small active-transfer budget forever.
+    // Idle cleanup is opportunistic on receive() plus explicitly callable by the app.
+    const val TRANSFER_IDLE_TIMEOUT_MS = 2L * 60L * 1000L
+    const val TRANSFER_MAX_LIFETIME_MS = 30L * 60L * 1000L
+
+    // With Base64 wire encoding, a 1 MiB crypto chunk normally needs many fragments
     // at the conservative serialized TransferData budget below. Keep enough headroom
     // for metadata growth without allowing an unbounded fragment list.
     const val MAX_FRAGMENTS_PER_CHUNK = 128
@@ -105,6 +110,8 @@ data class TransferConfig(
     val maxRetryDelayMs: Long = 10_000,
     val retryBackoffMultiplier: Double = 2.0,
     val maxTransportFramePayload: Int = TransferProtocol.MAX_TRANSPORT_FRAME_PAYLOAD,
+    val idleTimeoutMs: Long = TransferProtocol.TRANSFER_IDLE_TIMEOUT_MS,
+    val maxLifetimeMs: Long = TransferProtocol.TRANSFER_MAX_LIFETIME_MS,
 ) {
     init {
         require(chunkSize > 0)
@@ -117,6 +124,8 @@ data class TransferConfig(
         require(maxRetryDelayMs >= baseRetryDelayMs)
         require(retryBackoffMultiplier >= 1.0)
         require(maxTransportFramePayload > 0)
+        require(idleTimeoutMs > 0)
+        require(maxLifetimeMs >= idleTimeoutMs)
     }
 }
 
@@ -129,6 +138,7 @@ sealed interface TransferError {
     data class DecryptionFailed(val chunkIndex: Int) : TransferError
     data class DuplicateChunk(val chunkIndex: Int) : TransferError
     data class TransferCancelled(val reason: String) : TransferError
+    data class TransferExpired(val reason: String) : TransferError
     data class IoError(val message: String) : TransferError
 }
 
