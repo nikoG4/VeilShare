@@ -12,15 +12,24 @@ object TransferProtocol {
     const val MAX_ACTIVE_TRANSFERS = 2
     const val MAX_BUFFERED_CIPHERTEXT_BYTES = 64L * 1024L * 1024L
     const val AEAD_OVERHEAD_ALLOWANCE = 64
-    const val MAX_FRAGMENTS_PER_CHUNK = 16
+
+    // With Base64 wire encoding, a 1 MiB crypto chunk normally needs ~90 fragments
+    // at the conservative serialized TransferData budget below. Keep enough headroom
+    // for metadata growth without allowing an unbounded fragment list.
+    const val MAX_FRAGMENTS_PER_CHUNK = 128
+
     private const val DATA_AAD_DIRECTION_SENDER_TO_RECEIVER = 1
     private const val DATA_AAD_DOMAIN = "VEILSHARE-DATA-AAD-V1"
 
     /**
-     * Maximum payload size for a single transport frame (TransferData + PeerEnvelope + RelayRequest JSON overhead).
-     * Leaves headroom for JSON framing and base64 encoding expansion (~33%).
+     * Maximum serialized TransferData size targeted by the fragmentation layer.
+     *
+     * This is intentionally much smaller than the 64 KiB signaling-envelope payload
+     * limit because TransferData is nested inside PeerEnvelope and RelayRequest before
+     * KtorSignalingClient wraps it in SignalingEnvelope. Opaque byte fields use Base64
+     * on the wire, so a 16 KiB TransferData leaves conservative headroom at each layer.
      */
-    const val MAX_TRANSPORT_FRAME_PAYLOAD = 48 * 1024 // 48 KiB
+    const val MAX_TRANSPORT_FRAME_PAYLOAD = 16 * 1024 // 16 KiB serialized TransferData
 
     fun createNonce(random: SecureRandom): Nonce = Nonce(random.bytes(NONCE_SIZE))
 
