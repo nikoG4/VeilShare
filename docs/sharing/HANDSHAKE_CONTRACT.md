@@ -1,486 +1,257 @@
 # Handshake Contract V1
 
-Date: 2026-08-15
-Author: VeilShare Agent
-Version: V1
+Status: implementation contract for the current `security/critical-sharing-fixes` branch.
 
-## Overview
+This document describes what the code actually does. It is not a future design sketch.
 
-This document specifies the security contract for sharing protocol handshake.
+## Security boundary
 
-**V1 Approach:**
-- No production handshake crypto yet
-- Conceptual contract documented
-- Separate identity keys from vault keys
-- Transcript binding for replay resistance
+The handshake establishes authenticated per-session traffic keys for sharing. It is independent from all vault key material.
 
-## Threat Model
+Primitives:
 
-### T1: MITM During Session Establishment
+- Ed25519: long-term sharing-identity authentication.
+- X25519: fresh ephemeral key agreement per session.
+- SHA-256: identity/session/transcript hashes.
+- HKDF-SHA-256: directional traffic-key derivation.
+- ChaCha20-Poly1305: DATA protection after the handshake.
 
-**Threat:**
-Attacker intercepts session setup, modifies keys.
+Never reuse VMK, KEK, FileKey, catalog keys, slot keys, or vault-derived identity material as sharing keys.
 
-**Mitigation:**
-- Fresh ephemeral keys per session
-- Transcript binding
-- Peer identity verification
-- AEAD with distinct keys
+## Trusted identity requirement
 
-### T2: Replay Attacks
+A signature is useful only when verified against the public key already expected for the peer.
 
-**Threat:**
-Attacker replays captured session messages.
+Therefore:
 
-**Mitigation:**
-- Session uniqueness (sessionId)
-- Nonces in messages
-- Signature verification
-- Sequence numbers
+- `SESSION_HELLO` is verified against the expected sender Ed25519 public key.
+- `SESSION_CONFIRM` is verified against the expected receiver Ed25519 public key.
+- `SESSION_CONFIRM_ACK` is verified against the expected sender Ed25519 public key.
 
-### T3: Key Confusion
+A public key carried inside a message is checked for equality with the expected trusted key; it is never accepted merely because it verifies its own message.
 
-**Threat:**
-Attacker convinces peer to accept wrong key.
+How a contact becomes trusted/pinned is outside this handshake primitive and must be handled by the contact/discovery layer.
 
-**Mitigation:**
-- Key confirmation via test message
-- E2E integrity verification
-- Reject unexpected key material
+## Canonical encoding
 
-### T4: Key Separation Failure
+Handshake signatures and transcript hashes never use delimiter-based string concatenation.
 
-**Threat:**
-Transfer keys derived from vault keys.
+The canonical encoder is:
 
-**Mitigation:**
-- Independent ephemeral key generation
-- No reuse of VMK, KEK, FileKey
-- Separate key hierarchy
+```
+length(domain) || domain
+protocolVersion:u32-be
+length(field1) || field1
+length(field2) || field2
+...
+```
 
-## Key Architecture
+All lengths are unsigned-style 32-bit big-endian integer encodings of byte length. Text fields are UTF-8.
 
-### Long-Term Identity (Per Sharing Context)
+Domain separation strings:
 
-```kotlin
-data class SharingIdentityKeyPair(
-    val privateKey: Ed25519PrivateKey,
-    val publicKey: Ed25519PublicKey,
-    val sharingIdentityId: SharingIdentityId
+- `VEILSHARE/HANDSHAKE/SESSION_HELLO/V1`
+- `VEILSHARE/HANDSHAKE/SESSION_CONFIRM/V1`
+- `VEILSHARE/HANDSHAKE/SESSION_CONFIRM_ACK/V1`
+- `VEILSHARE/HANDSHAKE/TRANSCRIPT/V1`
+- `VEILSHARE/HANDSHAKE/HKDF/V1`
+
+This prevents ambiguity between field boundaries and prevents signatures from one handshake phase being reinterpreted as another phase.
+
+## Message sequence
+
+### 1. SESSION_HELLO — Sender -> Receiver
+
+Payload:
+
+- `sharingIdentityIdHash = SHA256(senderSharingIdentityId.value)`
+- sender Ed25519 public key, Base64 encoded
+- `sessionIdHash = SHA256(sessionId.value)`
+- protocol version
+- Ed25519 signature
+
+Signed canonical fields:
+
+```
+domain = SESSION_HELLO
+protocolVersion
+senderIdentityIdHash
+sessionIdHash
+```
+
+Receiver must already know:
+
+- expected sender identity-id hash;
+- expected session-id hash;
+- expected sender Ed25519 public key.
+
+The message is rejected on any mismatch or invalid signature.
+
+### 2. SESSION_CONFIRM — Receiver -> Sender
+
+Receiver generates a fresh X25519 key pair.
+
+Payload:
+
+- receiver sharing-identity-id hash
+- receiver Ed25519 public key
+- session-id hash
+- receiver X25519 ephemeral public key, Base64 encoded
+- protocol version
+- Ed25519 signature
+
+Signed canonical fields:
+
+```
+domain = SESSION_CONFIRM
+protocolVersion
+receiverIdentityIdHash
+sessionIdHash
+receiverEphemeralPublicKey
+```
+
+Sender verifies the signature using the already expected receiver Ed25519 key and separately verifies that both the carried identity key and receiver ephemeral key equal the expected values for the active handshake.
+
+### 3. SESSION_CONFIRM_ACK — Sender -> Receiver
+
+`PeerMessageType.SESSION_CONFIRM_ACK` is an explicit wire type.
+
+Sender generates a fresh X25519 key pair and constructs the canonical transcript:
+
+```
+protocolVersion
+senderIdentityIdHash
+receiverIdentityIdHash
+sessionIdHash
+senderEphemeralPublicKey
+receiverEphemeralPublicKey
+```
+
+The transcript hash is:
+
+```
+SHA256(canonicalTranscriptBytes)
+```
+
+ACK payload:
+
+- sender identity-id hash
+- session-id hash
+- sender X25519 ephemeral public key
+- transcript hash
+- protocol version
+- Ed25519 signature
+
+ACK signature covers:
+
+```
+domain = SESSION_CONFIRM_ACK
+protocolVersion
+senderIdentityIdHash
+sessionIdHash
+senderEphemeralPublicKey
+transcriptHash
+```
+
+The receiver obtains the sender ephemeral key from the ACK, rebuilds the expected transcript using its already-known receiver ephemeral key and both expected peer identities, recomputes the transcript hash, and verifies the ACK signature with the already trusted sender Ed25519 public key.
+
+Therefore an attacker cannot substitute the sender ephemeral key and simply recompute the public transcript hash: the replacement would also require a valid sender Ed25519 signature.
+
+## Key derivation
+
+After ACK verification both peers possess the same authenticated transcript and opposite halves of the same X25519 exchange.
+
+Each peer computes:
+
+```
+sharedSecret = X25519(localEphemeralPrivateKey, peerEphemeralPublicKey)
+transcriptHash = SHA256(canonicalTranscriptBytes)
+```
+
+HKDF info is transcript-bound and direction-separated:
+
+```
+S2R info = canonical(
+    domain = VEILSHARE/HANDSHAKE/HKDF/V1,
+    protocolVersion = 1,
+    "SENDER_TO_RECEIVER",
+    transcriptHash
+)
+
+R2S info = canonical(
+    domain = VEILSHARE/HANDSHAKE/HKDF/V1,
+    protocolVersion = 1,
+    "RECEIVER_TO_SENDER",
+    transcriptHash
 )
 ```
 
-**Properties:**
-- Ed25519 (not Ed25519 from vault)
-- Independent per sharing context
-- Not derived from vault keys
-- Rotatable
-- Stored in context-specific storage (not frozen vault)
-
-**Key Generation:**
-```kotlin
-val keyPair = Ed25519KeyPair.generate() // Crypto library choice
-val sharingIdentityId = SharingIdentityId(
-    value = SecureRandom().nextUUID().toString()
-)
-```
-
-**Storage:**
-- Phase 1: In-memory per context
-- Future: Encrypted file store per context
-- Not frozen vault formats
-
-### Ephemeral Session Keys
-
-```kotlin
-data class SessionKeyPair(
-    val privateKey: X25519PrivateKey,
-    val publicKey: X25519PublicKey
-)
-```
-
-**Properties:**
-- X25519 (not X25519 from vault)
-- Fresh per session
-- Ephemeral (TTL-based)
-- Independent keys
-
-**Generation:**
-```kotlin
-val sessionKeyPair = X25519KeyPair.generate() // Crypto library choice
-```
-
-### Transcript Keys
-
-Derived from transcript hash:
-
-```kotlin
-data class TranscriptKeys(
-    val transcriptHash: ByteArray,
-    val sharedSecret: ByteArray,
-    val senderToReceiverKey: ByteArray,
-    val receiverToSenderKey: ByteArray
-)
-```
-
-**Derivation:**
-```
-transcriptHash = HKDF-SHA-256(
-    salt = "transcript-binding-v1",
-    ikm = sharedSecret,
-    length = 32
-)
-
-sharedSecret = ECDH(keyPairA, keyPairB)
-
-senderToReceiverKey = HKDF-SHA-256(
-    salt = "s2r-key-v1",
-    ikm = sharedSecret,
-    length = 32
-)
-
-receiverToSenderKey = HKDF-SHA-256(
-    salt = "r2s-key-v1",
-    ikm = sharedSecret,
-    length = 32
-)
-```
-
-### Transfer Keys (AEAD)
-
-```kotlin
-data class TransferKeyPair(
-    val senderToReceiverKey: AEADKey,
-    val receiverToSenderKey: AEADKey
-)
-```
-
-**Properties:**
-- Independent per direction
-- Not vault keys
-- Fresh per transfer
-- AEAD (ChaCha20-Poly1305)
-
-## Handshake Sequence
-
-### Phase 1: Session Initiation
+Then:
 
 ```
-Sender → Receiver: SESSION_HELLO(
-    sharingIdentityId: SHA256(sharingIdentityIdValue),
-    sharingPublicKey: Base64(sharingIdentityPublicKey),
-    sessionId: SHA256(sessionIdValue),
-    protocolVersion: 1
-)
+senderToReceiverKey = HKDF-SHA256(sharedSecret, S2R info, 32)
+receiverToSenderKey = HKDF-SHA256(sharedSecret, R2S info, 32)
 ```
 
-**Receiver verifies:**
-- protocolVersion == 1
-- Valid signature over SESSION_HELLO
-- sessionId valid
-- sharingIdentityId not seen before (or acceptable reuse)
-
-### Phase 2: Session Confirmation
-
-```
-Receiver → Sender: SESSION_CONFIRM(
-    sharingIdentityId: SHA256(sharingIdentityIdValue),
-    sharingPublicKey: Base64(sharingIdentityPublicKey),
-    sessionId: SHA256(sessionIdValue),
-    receiverPublicKey: Base64(receiverEphemeralPublicKey),
-    protocolVersion: 1
-)
-```
-
-**Sender generates ephemeral key:**
-```kotlin
-val ephemeralKeyPair = X25519KeyPair.generate()
-```
-
-**Sender responds:**
-```
-Sender → Receiver: SESSION_CONFIRM(ACK)(
-    sessionId: SHA256(sessionIdValue),
-    ephemeralPublicKey: Base64(ephemeralPublicKey),
-    transcriptHash: SHA256(transcript)
-)
-```
-
-### Phase 3: Key Agreement
-
-**Sender derives:**
-```kotlin
-sharedSecret = ECDH(
-    ephemeralPrivateKey,
-    receiverPublicKey
-)
-
-transcriptHash = HKDF-SHA-256(
-    salt = "transcript-binding-v1",
-    ikm = ephemeralSharedSecret,
-    length = 32
-)
-```
-
-**Receiver derives:**
-```kotlin
-sharedSecret = ECDH(
-    ephemeralPrivateKey,
-    senderPublicKey
-)
-```
-
-**Verify transcript match.**
-
-### Phase 4: Transfer Key Derivation
-
-```kotlin
-senderToReceiverKey = HKDF-SHA-256(
-    salt = "s2r-key-v1",
-    ikm = sharedSecret,
-    length = 32
-)
-
-receiverToSenderKey = HKDF-SHA-256(
-    salt = "r2s-key-v1",
-    ikm = sharedSecret,
-    length = 32
-)
-```
-
-### Phase 5: Transfer Start
-
-```
-Sender → Receiver: DATA(
-    transferId: SHA256(transferIdValue),
-    fileId: SHA256(fileIdValue),
-    ciphertext: AENC(
-        key = senderToReceiverKey,
-        nonce = nonce(),
-        data = plaintext
-    ) || tag
-)
-```
-
-## Transcript Definition
-
-```kotlin
-transcript = [
-    SESSION_HELLO.protocolVersion,
-    SESSION_HELLO.senderSharingIdentityIdHash,
-    SESSION_HELLO.sessionIdHash,
-    SESSION_CONFIRM.protocolVersion,
-    SESSION_CONFIRM.receiverSharingIdentityIdHash,
-    SESSION_CONFIRM.sessionIdHash,
-    SESSION_CONFIRM.ephemeralPublicKeyHash,
-    SESSION_CONFIRM.ACK.protocolVersion,
-    SESSION_CONFIRM.ACK.sessionIdHash,
-    SESSION_CONFIRM.ACK.ephemeralPublicKeyHash,
-    SESSION_CONFIRM.ACK.transcriptHash
-]
-```
+The same X25519 secret under a different authenticated transcript therefore produces different traffic keys.
 
-**Hash:** SHA256 or HMAC-SHA256 for MAC
+The implementation best-effort zeroizes/closes the shared secret and temporary derived sensitive buffers after copying the final traffic-key bytes into `HandshakeKeys`.
 
-## Replay Resistance
+## DATA binding after handshake
 
-### Session Uniqueness
+DATA encryption additionally authenticates canonical AAD containing:
 
-```kotlin
-sessionId = SecureRandom().nextBytes(16) // 128 bits
-```
+- protocol version;
+- direction;
+- transfer-id hash;
+- file-id hash;
+- chunk index;
+- total chunks.
 
-**Properties:**
-- UUID v4 or random bytes
-- 2^128 possible sessions
-- Collisions negligible
+Session separation comes from the transcript-bound per-session traffic key.
 
-### Nonces
+Transport fragmentation occurs after crypto-chunk encryption. Fragments are reassembled before AEAD verification and cannot alter the authenticated crypto-chunk metadata.
 
-```kotlin
-nonce = SecureRandom().nextBytes(12) // 96 bits per message
-```
+## Replay model
 
-**Per-message nonces prevent replay.**
+Handshake messages are bound to `sessionIdHash`. The session/control layer must reject replay/reuse of an already consumed or invalid session identifier.
 
-### Sequence Numbers
+V1 does **not** claim a generic monotonic sequence number for every handshake message. Do not add that claim to documentation unless the implementation actually adds it.
 
-```kotlin
-sequenceNumber = AtomicInteger(0)
-```
+DATA retries retransmit the same already-encrypted logical frame/fragment. They do not re-encrypt modified content with the same key/nonce.
 
-**Monotonic per direction.**
+## Failure behavior
 
-## Key Separation
+Any of the following fail closed:
 
-### Vault Key Independence
+- unsupported protocol version;
+- identity-id mismatch;
+- session-id mismatch;
+- carried identity key != expected peer key;
+- invalid Ed25519 signature;
+- receiver ephemeral mismatch in `SESSION_CONFIRM`;
+- transcript mismatch in ACK;
+- sender ephemeral substitution in ACK;
+- malformed Base64/key material;
+- HKDF/X25519 failure.
 
-**NEVER reuse:**
-- VMK (VaultMasterKey)
-- KEK (KeyEncryptionKey)
-- FileKey
-- Catalog key
+No session traffic key should be considered authenticated until `SESSION_CONFIRM_ACK` verification succeeds.
 
-**Transfer keys are:**
-- Fresh ephemeral
-- Derived from ephemeral agreement
-- Not vault keys
+## Required tests
 
-### Sharing Identity Key Separation
+The baseline must keep tests for:
 
-**SharingIdentityKey is:**
-- Ed25519 (not vault signing key)
-- Separate from vault identity
-- Per sharing context
-- Not derived from vault keys
+- HELLO roundtrip and invalid signature;
+- peer identity key substitution;
+- CONFIRM roundtrip and receiver ephemeral mutation;
+- signed ACK roundtrip;
+- sender ephemeral replacement with recomputed transcript hash;
+- wrong trusted sender identity key;
+- transcript mutation;
+- canonical field-boundary ambiguity;
+- sender/receiver X25519 commutativity;
+- identical directional keys on both peers for the same transcript;
+- different keys for the same X25519 secret under a different transcript;
+- Desktop and Android compilation.
 
-### Key Hierarchy
-
-```
-Vault Keys (FROZEN)
-  ├── VMK
-  ├── KEK
-  ├── FileKey
-  └── Catalog key
-
-Sharing Keys (Separate)
-  ├── SharingIdentityKey (Ed25519)
-  │   └── Per context
-  ├── SessionKey (X25519)
-  │   └── Per session
-  ├── TranscriptKeys
-  │   └── Per session
-  └── TransferKeys (AEAD)
-      ├── senderToReceiverKey
-      └── receiverToSenderKey
-```
-
-## Security Properties
-
-### 1. Authentication
-
-- Sender authenticated by sharingPublicKey
-- Receiver authenticated by sharingPublicKey
-- Signature verification
-
-### 2. Integrity
-
-- All messages authenticated
-- AEAD for transfer data
-- Transcript binding
-
-### 3. Forward Secrecy
-
-- Ephemeral session keys
-- Not derived from long-term keys
-- Past sessions not compromised
-
-### 4. Replay Resistance
-
-- Session uniqueness
-- Nonces
-- Sequence numbers
-- Transcript binding
-
-### 5. Key Separation
-
-- Transfer keys independent
-- Not vault keys
-- Per session
-- Per direction
-
-## Error Handling
-
-### Invalid Protocol Version
-
-```kotlin
-if (message.protocolVersion != 1) {
-    throw ProtocolVersionMismatch(
-        expected = 1,
-        actual = message.protocolVersion
-    )
-}
-```
-
-### Invalid Signature
-
-```kotlin
-if (!verify(message, sharingIdentityPublicKey)) {
-    throw InvalidSignature()
-}
-```
-
-### Duplicate Session
-
-```kotlin
-if (sessionId in seenSessions) {
-    throw DuplicateSession(sessionId)
-}
-```
-
-### Invalid Transcript
-
-```kotlin
-if (expectedTranscriptHash != actualTranscriptHash) {
-    throw InvalidTranscript()
-}
-```
-
-## Implementation Notes
-
-### Crypto Library Choice
-
-**Current:**
-- No crypto library defined yet
-- Use existing `:shared:core-crypto` if compatible
-- Or add minimal crypto module
-
-**Recommended:**
-- Ed25519 for signatures
-- X25519 for key agreement
-- HKDF-SHA-256 for key derivation
-- ChaCha20-Poly1305 for AEAD
-
-### Implementation Phases
-
-**Phase 1 (V1 Foundation):**
-- DTOs for messages
-- State machine
-- No crypto implementation yet
-- Conceptual contract
-
-**Phase 2 (Implementation):**
-- Crypto library integration
-- Handshake implementation
-- Session management
-
-**Phase 3 (Hardening):**
-- Replay attack tests
-- Key rotation
-- Security review
-
-## Testing
-
-### Handshake Tests
-
-1. Valid handshake sequence
-2. Invalid protocol version
-3. Invalid signature
-4. Duplicate session
-5. Invalid transcript
-6. Key separation verification
-7. Replay attack simulation
-
-### State Machine Tests
-
-1. Idle → Ready → ResolvingPeer → CreatingSession → WaitingForPeer
-2. WaitingForPeer → Negotiating → Transferring
-3. Transferring → Verifying → Completed
-4. Transferring → Cancelled
-5. Transferring → Failed
-6. Invalid transition detection
-7. Timeout handling
-
----
-
-**Next Action:** Create presence/session registry implementation.
+Native iOS verification still requires macOS/Xcode. Source compatibility review is not equivalent to a native iOS build.
