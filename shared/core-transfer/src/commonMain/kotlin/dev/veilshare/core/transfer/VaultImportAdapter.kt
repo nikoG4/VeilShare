@@ -2,6 +2,7 @@ package dev.veilshare.core.transfer
 
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.TransferId
+import dev.veilshare.core.model.TransferOffer
 import dev.veilshare.core.vault.ImportProgress
 import dev.veilshare.core.vault.ImportReadHandle
 import dev.veilshare.core.vault.ImportSource
@@ -32,6 +33,30 @@ class TransferImportSourceAdapter(
 class ReceivedTransferVaultImporter(
     private val receiver: TransferReceiver,
 ) {
+    /** Preferred Sharing V1 path: metadata comes from the validated E2E OFFER. */
+    suspend fun importCompleted(
+        transferId: TransferId,
+        offer: TransferOffer,
+        vault: VaultHandle,
+        parent: VaultDirectoryId? = null,
+        progress: suspend (ImportProgress) -> Unit = {},
+    ): VaultItem.File {
+        val transferSource = receiver.getImportSource(transferId, offer.fileId)
+        require(transferSource.sizeHint == offer.sizeBytes) {
+            "Authenticated transfer size ${transferSource.sizeHint} does not match offered size ${offer.sizeBytes}"
+        }
+        return vault.import(
+            source = TransferImportSourceAdapter(
+                transferImportSource = transferSource,
+                displayNameOverride = offer.displayName,
+                mimeHintOverride = offer.mimeHint,
+            ),
+            parent = parent,
+            progress = progress,
+        )
+    }
+
+    /** Compatibility path for callers that have not yet migrated to TransferOffer. */
     suspend fun importCompleted(
         transferId: TransferId,
         fileId: FileId,
