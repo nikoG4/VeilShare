@@ -82,12 +82,10 @@ class DefaultTransferSender(
                     nonce = nonce.bytes,
                 )
 
-                try {
-                    sendWithFragmentation(transferData, sender)
-                } finally {
-                    ciphertext.fill(0)
-                    nonce.bytes.fill(0)
-                }
+                // ciphertext and nonce are public wire material. Once handed to the transport,
+                // do not mutate their backing arrays: a valid TransferNetworkSender may retain
+                // or asynchronously serialize the TransferData after send() returns.
+                sendWithFragmentation(transferData, sender)
                 bytesSent += chunkSize.toLong()
                 chunkIndex++
             }
@@ -125,18 +123,13 @@ class DefaultTransferSender(
             val end = minOf(start + fragmentSize, data.ciphertext.size)
             require(start < end) { "Fragmentation produced an empty fragment" }
 
-            val fragmentCiphertext = data.ciphertext.copyOfRange(start, end)
             val fragment = data.copy(
-                ciphertext = fragmentCiphertext,
+                ciphertext = data.ciphertext.copyOfRange(start, end),
                 fragmentIndex = i,
                 fragmentCount = fragmentCount,
             )
-            try {
-                requireSerializedTransferDataFits(fragment)
-                sendWithRetry(fragment, sender)
-            } finally {
-                fragmentCiphertext.fill(0)
-            }
+            requireSerializedTransferDataFits(fragment)
+            sendWithRetry(fragment, sender)
         }
     }
 
