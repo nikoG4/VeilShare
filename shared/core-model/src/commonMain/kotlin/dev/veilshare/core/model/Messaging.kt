@@ -165,6 +165,7 @@ data class PingMessage(
 enum class PeerMessageType {
     SESSION_HELLO,
     SESSION_CONFIRM,
+    SESSION_CONFIRM_ACK,
     OFFER,
     ACCEPT,
     REJECT,
@@ -227,16 +228,20 @@ data class SessionConfirm(
 
 @Serializable
 data class SessionConfirmAck(
+    val senderIdentityIdHash: String,
     val sessionIdHash: String,
     val senderEphemeralPublicKey: String,
     val transcriptHash: String,
     val protocolVersion: Int = SharingProtocol.VERSION,
+    val signature: String,
 ) {
     init {
         SharingProtocol.requireSupported(protocolVersion)
+        require(senderIdentityIdHash.isNotBlank() && senderIdentityIdHash.length <= 128)
         require(sessionIdHash.isNotBlank() && sessionIdHash.length <= 128)
         require(senderEphemeralPublicKey.isNotBlank() && senderEphemeralPublicKey.length <= 512)
         require(transcriptHash.isNotBlank() && transcriptHash.length <= 128)
+        require(signature.isNotBlank() && signature.length <= 512)
     }
 }
 
