@@ -39,10 +39,16 @@ data class HandshakeTranscript(
     fun computeTranscriptHash(): String = Hash.sha256(toCanonicalBytes()).toHex()
 }
 
+/**
+ * Four independent session subkeys. DATA crypto and outer peer-envelope crypto never use
+ * the same ChaCha20-Poly1305 key, even within one direction.
+ */
 @Serializable
 data class HandshakeKeys(
-    val senderToReceiverKey: ByteArray,
-    val receiverToSenderKey: ByteArray,
+    val senderToReceiverDataKey: ByteArray,
+    val receiverToSenderDataKey: ByteArray,
+    val senderToReceiverEnvelopeKey: ByteArray,
+    val receiverToSenderEnvelopeKey: ByteArray,
     val transcriptHash: String,
 )
 
@@ -84,10 +90,6 @@ interface HandshakeProtocol {
         signer: Ed25519Signer,
     )
 
-    /**
-     * Creates the final handshake message. The sender ephemeral key and the complete
-     * transcript are signed by the sender's long-term Ed25519 sharing identity.
-     */
     fun createSessionConfirmAck(
         senderSharingIdentityId: SharingIdentityId,
         senderSharingKeyPair: Ed25519KeyPair,
@@ -98,10 +100,6 @@ interface HandshakeProtocol {
         signer: Ed25519Signer,
     ): SessionConfirmAck
 
-    /**
-     * Verifies the ACK against the already trusted/pinned sender identity and rebuilds
-     * the expected transcript using the sender ephemeral key carried by the signed ACK.
-     */
     fun verifySessionConfirmAck(
         ack: SessionConfirmAck,
         expectedSenderSharingIdentityIdHash: String,
@@ -112,11 +110,6 @@ interface HandshakeProtocol {
         signer: Ed25519Signer,
     ): VerifiedSessionConfirmAck
 
-    /**
-     * Derives both directional keys from X25519 and binds HKDF info to the authenticated
-     * transcript. Both peers call this with their local private key + peer public key and
-     * obtain the same directional key pair.
-     */
     suspend fun deriveHandshakeKeys(
         localEphemeralPrivateKey: X25519PrivateKey,
         peerEphemeralPublicKey: X25519PublicKey,
@@ -323,25 +316,35 @@ open class DefaultHandshakeProtocol : HandshakeProtocol {
     ): HandshakeKeys {
         val sharedSecret = keyAgreement.deriveSharedSecret(localEphemeralPrivateKey, peerEphemeralPublicKey)
         val transcriptHash = transcript.computeTranscriptHash()
-        val s2rContext = HandshakeCanonical.keyDerivationContext("SENDER_TO_RECEIVER", transcriptHash)
-        val r2sContext = HandshakeCanonical.keyDerivationContext("RECEIVER_TO_SENDER", transcriptHash)
+        val s2rDataContext = HandshakeCanonical.keyDerivationContext("DATA/SENDER_TO_RECEIVER", transcriptHash)
+        val r2sDataContext = HandshakeCanonical.keyDerivationContext("DATA/RECEIVER_TO_SENDER", transcriptHash)
+        val s2rEnvelopeContext = HandshakeCanonical.keyDerivationContext("ENVELOPE/SENDER_TO_RECEIVER", transcriptHash)
+        val r2sEnvelopeContext = HandshakeCanonical.keyDerivationContext("ENVELOPE/RECEIVER_TO_SENDER", transcriptHash)
         return try {
-            val s2r = keyDeriver.derive(sharedSecret, s2rContext, 32)
-            val r2s = keyDeriver.derive(sharedSecret, r2sContext, 32)
+            val s2rData = keyDeriver.derive(sharedSecret, s2rDataContext, 32)
+            val r2sData = keyDeriver.derive(sharedSecret, r2sDataContext, 32)
+            val s2rEnvelope = keyDeriver.derive(sharedSecret, s2rEnvelopeContext, 32)
+            val r2sEnvelope = keyDeriver.derive(sharedSecret, r2sEnvelopeContext, 32)
             try {
                 HandshakeKeys(
-                    senderToReceiverKey = s2r.copy(),
-                    receiverToSenderKey = r2s.copy(),
+                    senderToReceiverDataKey = s2rData.copy(),
+                    receiverToSenderDataKey = r2sData.copy(),
+                    senderToReceiverEnvelopeKey = s2rEnvelope.copy(),
+                    receiverToSenderEnvelopeKey = r2sEnvelope.copy(),
                     transcriptHash = transcriptHash,
                 )
             } finally {
-                s2r.close()
-                r2s.close()
+                s2rData.close()
+                r2sData.close()
+                s2rEnvelope.close()
+                r2sEnvelope.close()
             }
         } finally {
             sharedSecret.close()
-            s2rContext.fill(0)
-            r2sContext.fill(0)
+            s2rDataContext.fill(0)
+            r2sDataContext.fill(0)
+            s2rEnvelopeContext.fill(0)
+            r2sEnvelopeContext.fill(0)
         }
     }
 
@@ -420,15 +423,12 @@ internal object HandshakeCanonical {
     }
 }
 
-// expect/actual pattern for Hash and Base64
 expect object Hash {
     fun sha256(input: ByteArray): ByteArray
 }
 
 expect fun ByteArray.toHex(): String
-
 expect fun ByteArray.toBase64(): String
-
 expect fun String.decodeFromBase64(): ByteArray
 
 class HandshakeTranscriptEncodingException(message: String) : Exception(message)
