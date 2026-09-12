@@ -9,7 +9,8 @@ object TransferProtocol {
     const val CHUNK_SIZE = 1_048_576 // 1 MiB
     const val NONCE_SIZE = 12
     const val MAX_CHUNKS = 65_536
-    const val MAX_ACTIVE_TRANSFERS = 16
+    const val MAX_ACTIVE_TRANSFERS = 2
+    const val MAX_BUFFERED_CIPHERTEXT_BYTES = 64L * 1024L * 1024L
     const val AEAD_OVERHEAD_ALLOWANCE = 64
     private const val DATA_AAD_DIRECTION_SENDER_TO_RECEIVER = 1
     private const val DATA_AAD_DOMAIN = "VEILSHARE-DATA-AAD-V1"
@@ -82,6 +83,7 @@ data class TransferConfig(
     val maxChunks: Int = TransferProtocol.MAX_CHUNKS,
     val maxActiveTransfers: Int = TransferProtocol.MAX_ACTIVE_TRANSFERS,
     val maxCiphertextSize: Int = chunkSize + TransferProtocol.AEAD_OVERHEAD_ALLOWANCE,
+    val maxTransferBytes: Long = TransferProtocol.MAX_BUFFERED_CIPHERTEXT_BYTES,
     val maxRetries: Int = 3,
     val baseRetryDelayMs: Long = 500,
     val maxRetryDelayMs: Long = 10_000,
@@ -92,6 +94,7 @@ data class TransferConfig(
         require(maxChunks > 0)
         require(maxActiveTransfers > 0)
         require(maxCiphertextSize > 0)
+        require(maxTransferBytes > 0)
         require(maxRetries >= 0)
         require(baseRetryDelayMs >= 0)
         require(maxRetryDelayMs >= baseRetryDelayMs)
@@ -104,6 +107,7 @@ sealed interface TransferError {
     data class InvalidChunkIndex(val expected: Int, val received: Int) : TransferError
     data class InvalidTransferMetadata(val reason: String) : TransferError
     data class TooManyActiveTransfers(val maxActiveTransfers: Int) : TransferError
+    data class TransferTooLarge(val maxBytes: Long, val actualBytes: Long) : TransferError
     data class DecryptionFailed(val chunkIndex: Int) : TransferError
     data class DuplicateChunk(val chunkIndex: Int) : TransferError
     data class TransferCancelled(val reason: String) : TransferError
