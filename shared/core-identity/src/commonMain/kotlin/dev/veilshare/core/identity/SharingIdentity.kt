@@ -57,6 +57,10 @@ data class StoredSharingIdentity(
         publicKey = publicKey.copyOf(),
     )
 
+    fun clearPrivateMaterial() {
+        privateKeySeed.fill(0)
+    }
+
     companion object {
         const val ED25519_KEY_BYTES = 32
     }
@@ -80,13 +84,13 @@ class InMemorySharingIdentityStore : SharingIdentityStore {
     override suspend fun replace(record: StoredSharingIdentity) {
         mutex.withLock {
             val previous = records.put(record.contextId.value, record.deepCopy())
-            previous?.privateKeySeed?.fill(0)
+            previous?.clearPrivateMaterial()
         }
     }
 
     override suspend fun delete(contextId: SharingContextId) {
         mutex.withLock {
-            records.remove(contextId.value)?.privateKeySeed?.fill(0)
+            records.remove(contextId.value)?.clearPrivateMaterial()
         }
     }
 }
@@ -139,21 +143,40 @@ class SharingIdentityManager(
 
     suspend fun getOrCreate(contextId: SharingContextId): SharingIdentityHandle = mutex.withLock {
         val existing = store.load(contextId)
-        if (existing != null) return@withLock existing.toHandle()
+        if (existing != null) {
+            return@withLock try {
+                existing.toHandle()
+            } finally {
+                existing.clearPrivateMaterial()
+            }
+        }
 
         val created = generate(contextId)
-        store.replace(created)
-        created.toHandle()
+        return@withLock try {
+            store.replace(created)
+            created.toHandle()
+        } finally {
+            created.clearPrivateMaterial()
+        }
     }
 
     suspend fun publicIdentity(contextId: SharingContextId): SharingPublicIdentity? = mutex.withLock {
-        store.load(contextId)?.toPublicIdentity()
+        val loaded = store.load(contextId) ?: return@withLock null
+        try {
+            loaded.toPublicIdentity()
+        } finally {
+            loaded.clearPrivateMaterial()
+        }
     }
 
     suspend fun rotate(contextId: SharingContextId): SharingIdentityHandle = mutex.withLock {
         val replacement = generate(contextId)
-        store.replace(replacement)
-        replacement.toHandle()
+        return@withLock try {
+            store.replace(replacement)
+            replacement.toHandle()
+        } finally {
+            replacement.clearPrivateMaterial()
+        }
     }
 
     suspend fun delete(contextId: SharingContextId) {
@@ -162,7 +185,7 @@ class SharingIdentityManager(
         }
     }
 
-    private suspend fun generate(contextId: SharingContextId): StoredSharingIdentity {
+    private fun generate(contextId: SharingContextId): StoredSharingIdentity {
         val keyPair = signer.generateKeyPair()
         val privateSeed = keyPair.privateKey.material.copy()
         return try {
