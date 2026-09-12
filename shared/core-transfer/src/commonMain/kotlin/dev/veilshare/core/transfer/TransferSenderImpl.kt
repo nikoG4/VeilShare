@@ -4,20 +4,21 @@ import dev.veilshare.core.crypto.AuthenticatedCipher
 import dev.veilshare.core.crypto.Nonce
 import dev.veilshare.core.crypto.SecureRandom
 import dev.veilshare.core.crypto.SensitiveBytes
-import dev.veilshare.core.model.TransferData
-import dev.veilshare.core.model.TransferId
 import dev.veilshare.core.model.PeerEnvelope
 import dev.veilshare.core.model.RelayRequest
-import dev.veilshare.core.model.TransferComplete
+import dev.veilshare.core.model.SharingProtocol
 import dev.veilshare.core.model.TransferCancel
+import dev.veilshare.core.model.TransferComplete
+import dev.veilshare.core.model.TransferData
+import dev.veilshare.core.model.TransferId
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 
 private val jsonEncoder = Json { ignoreUnknownKeys = true }
 
-private inline fun <T> serializeToBytes(serializer: kotlinx.serialization.KSerializer<T>, value: T): ByteArray {
-    return jsonEncoder.encodeToString(serializer, value).encodeToByteArray()
-}
+private inline fun <T> serializeToBytes(serializer: kotlinx.serialization.KSerializer<T>, value: T): ByteArray =
+    jsonEncoder.encodeToString(serializer, value).encodeToByteArray()
 
 class DefaultTransferSender(
     private val random: SecureRandom,
@@ -33,87 +34,125 @@ class DefaultTransferSender(
     ): TransferResult {
         val transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
         val fileIdHash = TransferPlatform.sha256ToHex(fileId.value.encodeToByteArray())
-        
         val totalChunks = calculateTotalChunks(source.fileSize)
-        require(totalChunks <= config.maxChunks) { "File too large: $totalChunks chunks exceeds max ${config.maxChunks}" }
 
-        var chunkIndex = 0
-        var bytesSent: Long = 0
-
-        while (chunkIndex < totalChunks) {
-            val offset = chunkIndex.toLong() * config.chunkSize
-            val remainingBytes = source.fileSize - offset
-            val chunkSize = minOf(config.chunkSize, remainingBytes.toInt())
-            
-            val chunk = source.readChunk(offset, chunkSize)
-            val nonce = TransferProtocol.createNonce(random)
-            val ciphertext = encryptor.encrypt(chunk, nonce)
-
-            val transferData = TransferData(
-                transferIdHash = transferIdHash,
-                fileIdHash = fileIdHash,
-                chunkIndex = chunkIndex,
-                totalChunks = totalChunks,
-                ciphertext = ciphertext,
-                nonce = nonce.bytes,
-            )
-
-            sendWithRetry(transferData, sender)
-            bytesSent += chunk.size.toLong()
-            chunkIndex++
+        require(totalChunks > 0) { "Empty files are not supported by Sharing V1" }
+        require(totalChunks <= config.maxChunks) {
+            "File too large: $totalChunks chunks exceeds max ${config.maxChunks}"
         }
 
-        completeWithRetry(transferIdHash, fileIdHash, totalChunks, sender)
-        source.close()
+        var chunkIndex = 0
+        var bytesSent = 0L
 
-        return TransferResult(totalChunks, bytesSent)
+        try {
+            while (chunkIndex < totalChunks) {
+                val offset = chunkIndex.toLong() * config.chunkSize.toLong()
+                val remainingBytes = source.fileSize - offset
+                val chunkSize = minOf(config.chunkSize.toLong(), remainingBytes).toInt()
+                val chunk = source.readChunk(offset, chunkSize)
+                require(chunk.isNotEmpty()) { "Unexpected EOF while reading chunk $chunkIndex" }
+                require(chunk.size <= config.chunkSize) {
+                    "TransferSource returned ${chunk.size} bytes for max chunk size ${config.chunkSize}"
+                }
+
+                val nonce = TransferProtocol.createNonce(random)
+                val aad = TransferProtocol.createDataAad(
+                    protocolVersion = SharingProtocol.VERSION,
+                    transferIdHash = transferIdHash,
+                    fileIdHash = fileIdHash,
+                    chunkIndex = chunkIndex,
+                    totalChunks = totalChunks,
+                )
+                val ciphertext = encryptor.encrypt(chunk, nonce, aad)
+                require(ciphertext.isNotEmpty() && ciphertext.size <= config.maxCiphertextSize) {
+                    "Encrypted chunk size ${ciphertext.size} exceeds max ${config.maxCiphertextSize}"
+                }
+
+                val transferData = TransferData(
+                    transferIdHash = transferIdHash,
+                    fileIdHash = fileIdHash,
+                    chunkIndex = chunkIndex,
+                    totalChunks = totalChunks,
+                    ciphertext = ciphertext,
+                    nonce = nonce.bytes,
+                )
+
+                sendWithRetry(transferData, sender)
+                bytesSent += chunk.size.toLong()
+                chunkIndex++
+            }
+
+            completeWithRetry(transferIdHash, fileIdHash, totalChunks, sender)
+            return TransferResult(totalChunks, bytesSent)
+        } finally {
+            source.close()
+        }
     }
 
     private suspend fun sendWithRetry(data: TransferData, sender: TransferNetworkSender) {
-        var attempt = 0
-        var delayMs = config.baseRetryDelayMs.toDouble()
-        
-        while (true) {
-            try {
-                sender.send(data)
-                return
-            } catch (e: Exception) {
-                attempt++
-                if (attempt > config.maxRetries) {
-                    throw TransferException(TransferError.IoError("Failed to send chunk ${data.chunkIndex} after ${config.maxRetries} retries: ${e.message}"), e)
-                }
-                kotlinx.coroutines.delay(delayMs.toLong())
-                delayMs = (delayMs * config.retryBackoffMultiplier).coerceAtMost(config.maxRetryDelayMs.toDouble())
-            }
+        retryTransport("chunk ${data.chunkIndex}") {
+            sender.send(data)
         }
     }
 
     private suspend fun completeWithRetry(
-        transferIdHash: String, 
-        fileIdHash: String, 
-        totalChunks: Int, 
-        sender: TransferNetworkSender
+        transferIdHash: String,
+        fileIdHash: String,
+        totalChunks: Int,
+        sender: TransferNetworkSender,
     ) {
-        var attempt = 0
+        retryTransport("COMPLETE") {
+            sender.complete(transferIdHash, fileIdHash, totalChunks)
+        }
+    }
+
+    private suspend fun retryTransport(operation: String, block: suspend () -> Unit) {
+        var retries = 0
         var delayMs = config.baseRetryDelayMs.toDouble()
-        
+
         while (true) {
             try {
-                sender.complete(transferIdHash, fileIdHash, totalChunks)
+                block()
                 return
-            } catch (e: Exception) {
-                attempt++
-                if (attempt > config.maxRetries) {
-                    throw TransferException(TransferError.IoError("Failed to send COMPLETE after ${config.maxRetries} retries: ${e.message}"), e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!isRetryableTransportFailure(e)) {
+                    throw e
                 }
+
+                if (retries >= config.maxRetries) {
+                    throw TransferException(
+                        TransferError.IoError(
+                            "Failed to send $operation after ${config.maxRetries} retries: ${e.message}",
+                        ),
+                        e,
+                    )
+                }
+
+                retries++
                 kotlinx.coroutines.delay(delayMs.toLong())
-                delayMs = (delayMs * config.retryBackoffMultiplier).coerceAtMost(config.maxRetryDelayMs.toDouble())
+                delayMs = (delayMs * config.retryBackoffMultiplier)
+                    .coerceAtMost(config.maxRetryDelayMs.toDouble())
             }
         }
     }
 
+    private fun isRetryableTransportFailure(error: Throwable): Boolean = when (error) {
+        is CancellationException -> false
+        is SecurityException -> false
+        is IllegalArgumentException -> false
+        is TransferException -> error.error is TransferError.IoError
+        else -> true
+    }
+
     internal fun calculateTotalChunks(fileSize: Long): Int {
-        return ((fileSize + config.chunkSize - 1) / config.chunkSize).toInt()
+        require(fileSize >= 0) { "fileSize must be non-negative" }
+        if (fileSize == 0L) return 0
+
+        val chunks = ((fileSize - 1L) / config.chunkSize.toLong()) + 1L
+        require(chunks <= Int.MAX_VALUE.toLong()) { "File requires too many chunks" }
+        return chunks.toInt()
     }
 }
 
@@ -121,20 +160,22 @@ class DefaultTransferEncryptor(
     private val cipher: AuthenticatedCipher,
     private val key: SensitiveBytes,
 ) : TransferEncryptor {
+    override suspend fun encrypt(chunk: ByteArray, nonce: Nonce): ByteArray =
+        encrypt(chunk, nonce, ByteArray(0))
 
-    override suspend fun encrypt(chunk: ByteArray, nonce: Nonce): ByteArray {
-        return cipher.sealWithNonce(key, nonce, chunk, ByteArray(0)).ciphertext
-    }
+    override suspend fun encrypt(chunk: ByteArray, nonce: Nonce, aad: ByteArray): ByteArray =
+        cipher.sealWithNonce(key, nonce, chunk, aad).ciphertext
 }
 
 class DefaultTransferDecryptor(
     private val cipher: AuthenticatedCipher,
     private val key: SensitiveBytes,
 ) : TransferDecryptor {
+    override suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce): ByteArray =
+        decrypt(ciphertext, nonce, ByteArray(0))
 
-    override suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce): ByteArray {
-        return cipher.open(key, dev.veilshare.core.crypto.SealedBytes(nonce, ciphertext), ByteArray(0))
-    }
+    override suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce, aad: ByteArray): ByteArray =
+        cipher.open(key, dev.veilshare.core.crypto.SealedBytes(nonce, ciphertext), aad)
 }
 
 class SignalingTransferNetworkSender(
@@ -146,19 +187,19 @@ class SignalingTransferNetworkSender(
 
     override suspend fun send(data: TransferData) {
         val envelope = PeerEnvelope(
-            protocolVersion = dev.veilshare.core.model.SharingProtocol.VERSION,
+            protocolVersion = SharingProtocol.VERSION,
             messageType = dev.veilshare.core.model.PeerMessageType.DATA,
             sessionId = sessionId,
             transferId = transferId,
             payload = serializeToBytes(serializer<TransferData>(), data),
         )
-        
+
         val relayRequest = RelayRequest(
             toReferenceCode = peerReferenceCode,
             sessionId = sessionId,
             opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope),
         )
-        
+
         signalingClient.relay(relayRequest)
     }
 
@@ -168,21 +209,21 @@ class SignalingTransferNetworkSender(
             fileIdHash = fileIdHash,
             totalChunks = totalChunks,
         )
-        
+
         val envelope = PeerEnvelope(
-            protocolVersion = dev.veilshare.core.model.SharingProtocol.VERSION,
+            protocolVersion = SharingProtocol.VERSION,
             messageType = dev.veilshare.core.model.PeerMessageType.COMPLETE,
             sessionId = sessionId,
             transferId = transferId,
             payload = serializeToBytes(serializer<TransferComplete>(), complete),
         )
-        
+
         val relayRequest = RelayRequest(
             toReferenceCode = peerReferenceCode,
             sessionId = sessionId,
             opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope),
         )
-        
+
         signalingClient.relay(relayRequest)
     }
 
@@ -191,56 +232,22 @@ class SignalingTransferNetworkSender(
             transferIdHash = transferIdHash,
             reason = reason,
         )
-        
+
         val envelope = PeerEnvelope(
-            protocolVersion = dev.veilshare.core.model.SharingProtocol.VERSION,
+            protocolVersion = SharingProtocol.VERSION,
             messageType = dev.veilshare.core.model.PeerMessageType.CANCEL,
             sessionId = sessionId,
             transferId = transferId,
             payload = serializeToBytes(serializer<TransferCancel>(), cancel),
         )
-        
+
         val relayRequest = RelayRequest(
             toReferenceCode = peerReferenceCode,
             sessionId = sessionId,
             opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope),
         )
-        
+
         signalingClient.relay(relayRequest)
-    }
-}
-
-class FileTransferSource(
-    private val file: java.io.File,
-    override val displayName: String = file.name,
-    override val mimeHint: String? = null,
-) : TransferSource {
-
-    private var randomAccessFile: java.io.RandomAccessFile? = null
-
-    override val fileSize: Long = file.length()
-
-    override suspend fun readChunk(offset: Long, size: Int): ByteArray {
-        if (randomAccessFile == null) {
-            randomAccessFile = java.io.RandomAccessFile(file, "r")
-        }
-        randomAccessFile?.let { it.seek(offset) }
-        val buffer = ByteArray(size)
-        var totalRead = 0
-        while (totalRead < size) {
-            val read = randomAccessFile?.read(buffer, totalRead, size - totalRead) ?: -1
-            if (read == -1) break
-            totalRead += read
-        }
-        if (totalRead < size) {
-            return buffer.copyOf(totalRead)
-        }
-        return buffer
-    }
-
-    override suspend fun close() {
-        randomAccessFile?.close()
-        randomAccessFile = null
     }
 }
 
@@ -249,15 +256,19 @@ class ByteArrayTransferSource(
     override val displayName: String = "data",
     override val mimeHint: String? = "application/octet-stream",
 ) : TransferSource {
-
     override val fileSize: Long = data.size.toLong()
 
     override suspend fun readChunk(offset: Long, size: Int): ByteArray {
-        val end = (offset + size).toInt().coerceAtMost(data.size)
-        return data.copyOfRange(offset.toInt(), end)
+        require(offset >= 0)
+        require(size >= 0)
+        if (offset >= data.size.toLong() || size == 0) return ByteArray(0)
+
+        val start = offset.toInt()
+        val end = minOf(data.size, start + size)
+        return data.copyOfRange(start, end)
     }
 
     override suspend fun close() {
-        // No-op for in-memory source
+        // No-op for caller-owned in-memory data.
     }
 }
