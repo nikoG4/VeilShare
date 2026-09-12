@@ -109,13 +109,13 @@ class SecureSharingE2ETest {
             keyDeriver,
         )
         assertContentEquals(
-            senderHandshakeKeys.senderToReceiverKey,
-            receiverHandshakeKeys.senderToReceiverKey,
+            senderHandshakeKeys.senderToReceiverDataKey,
+            receiverHandshakeKeys.senderToReceiverDataKey,
         )
         assertEquals(senderHandshakeKeys.transcriptHash, receiverHandshakeKeys.transcriptHash)
 
-        val senderTrafficKey = SensitiveBytes(senderHandshakeKeys.senderToReceiverKey.copyOf())
-        val receiverTrafficKey = SensitiveBytes(receiverHandshakeKeys.senderToReceiverKey.copyOf())
+        val senderTrafficKey = SensitiveBytes(senderHandshakeKeys.senderToReceiverDataKey.copyOf())
+        val receiverTrafficKey = SensitiveBytes(receiverHandshakeKeys.senderToReceiverDataKey.copyOf())
         val root = Files.createTempDirectory("secure-sharing-e2e-")
         val plaintext = ByteArray(96 * 1024 + 37) { index -> ((index * 13 + 91) and 0xff).toByte() }
         val transferId = TransferId("secure-e2e-transfer")
@@ -165,10 +165,14 @@ class SecureSharingE2ETest {
         } finally {
             senderTrafficKey.close()
             receiverTrafficKey.close()
-            senderHandshakeKeys.senderToReceiverKey.fill(0)
-            senderHandshakeKeys.receiverToSenderKey.fill(0)
-            receiverHandshakeKeys.senderToReceiverKey.fill(0)
-            receiverHandshakeKeys.receiverToSenderKey.fill(0)
+            senderHandshakeKeys.senderToReceiverDataKey.fill(0)
+            senderHandshakeKeys.receiverToSenderDataKey.fill(0)
+            senderHandshakeKeys.senderToReceiverEnvelopeKey.fill(0)
+            senderHandshakeKeys.receiverToSenderEnvelopeKey.fill(0)
+            receiverHandshakeKeys.senderToReceiverDataKey.fill(0)
+            receiverHandshakeKeys.receiverToSenderDataKey.fill(0)
+            receiverHandshakeKeys.senderToReceiverEnvelopeKey.fill(0)
+            receiverHandshakeKeys.receiverToSenderEnvelopeKey.fill(0)
             plaintext.fill(0)
             root.toFile().deleteRecursively()
         }

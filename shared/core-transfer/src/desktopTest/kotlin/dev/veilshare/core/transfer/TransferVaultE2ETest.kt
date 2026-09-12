@@ -71,7 +71,7 @@ class TransferVaultE2ETest {
             )
 
             assertEquals("received-e2e.bin", imported.displayName)
-            assertEquals("application/octet-stream", imported.mimeHint)
+            assertEquals("application/octet-stream", imported.mimeType)
             assertEquals(plaintext.size.toLong(), imported.size)
             assertContentEquals(plaintext, readAll(vault, imported))
             vault.close()

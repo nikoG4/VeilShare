@@ -320,7 +320,8 @@ class InMemoryTransferReceiver(
                 }
             }
 
-            val chunkBufferedBytes = fragments.sumOf { it.ciphertext.size.toLong() } + transferData.ciphertext.size.toLong()
+            // fragments already includes the current fragment (added above), so no need to add transferData.ciphertext.size again
+            val chunkBufferedBytes = fragments.sumOf { it.ciphertext.size.toLong() }
             if (chunkBufferedBytes > config.maxCiphertextSize.toLong()) {
                 return@withLock fail(
                     TransferError.ChunkTooLarge(config.maxCiphertextSize, chunkBufferedBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()),
@@ -352,7 +353,7 @@ class InMemoryTransferReceiver(
                 return@withLock ReceiveResult.ChunkAccepted(chunkIndex, false)
             }
 
-            fragments.sortBy { it.fragmentIndex }
+            fragments.sortWith(compareBy { it.fragmentIndex })
             for (expectedIndex in fragments.indices) {
                 if (fragments[expectedIndex].fragmentIndex != expectedIndex) {
                     return@withLock fail(

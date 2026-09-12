@@ -1,6 +1,7 @@
 package dev.veilshare.core.transfer
 
 import dev.veilshare.core.crypto.AuthenticatedCipher
+import dev.veilshare.core.crypto.DesktopProductionCrypto
 import dev.veilshare.core.crypto.Hash
 import dev.veilshare.core.crypto.Nonce
 import dev.veilshare.core.crypto.SecureRandom
@@ -927,11 +928,18 @@ class TransferSecurityHardeningTest {
         val plaintext = ByteArray(1_048_576) { it.toByte() } // Exactly 1 MiB
         val source = ByteArrayTransferSource(plaintext)
 
+        val crypto = DesktopProductionCrypto.create()
+        // Derive a traffic key using HKDF like the real protocol does
+        val ikm = SensitiveBytes(crypto.random.bytes(32))
+        val context = "TEST-TRAFFIC-KEY".encodeToByteArray()
+        val trafficKey = DesktopProductionCrypto.keyDeriver().derive(ikm, context, 32)
+        ikm.close()
+
         sender.send(
             transferId = TransferId("one-mib-transfer"),
             fileId = FileId("one-mib-file"),
             source = source,
-            encryptor = DefaultTransferEncryptor(identityCipher, key),
+            encryptor = DefaultTransferEncryptor(crypto.cipher, trafficKey),
             sender = network,
         )
 
@@ -950,7 +958,7 @@ class TransferSecurityHardeningTest {
         }
 
         // Verify receiver can reassemble
-        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val decryptor = DefaultTransferDecryptor(crypto.cipher, trafficKey)
         val receiver = InMemoryTransferReceiver(decryptor)
         for (data in sentData) {
             val result = receiver.receive(data)
@@ -974,6 +982,7 @@ class TransferSecurityHardeningTest {
         handle.close()
 
         assertContentEquals(plaintext, reconstructed.toByteArray())
+        trafficKey.close()
     }
 
     // Wire size test: full pipeline TransferData -> PeerEnvelope -> RelayRequest -> SignalingEnvelope

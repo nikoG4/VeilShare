@@ -237,10 +237,21 @@ class HandshakeTest {
             keyDeriver,
         )
 
-        assertContentEquals(senderKeys.senderToReceiverKey, receiverKeys.senderToReceiverKey)
-        assertContentEquals(senderKeys.receiverToSenderKey, receiverKeys.receiverToSenderKey)
+        // DATA keys must match
+        assertContentEquals(senderKeys.senderToReceiverDataKey, receiverKeys.senderToReceiverDataKey)
+        assertContentEquals(senderKeys.receiverToSenderDataKey, receiverKeys.receiverToSenderDataKey)
+        // ENVELOPE keys must match
+        assertContentEquals(senderKeys.senderToReceiverEnvelopeKey, receiverKeys.senderToReceiverEnvelopeKey)
+        assertContentEquals(senderKeys.receiverToSenderEnvelopeKey, receiverKeys.receiverToSenderEnvelopeKey)
         assertEquals(senderKeys.transcriptHash, receiverKeys.transcriptHash)
-        assertFalse(senderKeys.senderToReceiverKey.contentEquals(senderKeys.receiverToSenderKey))
+
+        // DATA keys != ENVELOPE keys in same direction
+        assertFalse(senderKeys.senderToReceiverDataKey.contentEquals(senderKeys.senderToReceiverEnvelopeKey))
+        assertFalse(senderKeys.receiverToSenderDataKey.contentEquals(senderKeys.receiverToSenderEnvelopeKey))
+        // S2R DATA != R2S DATA
+        assertFalse(senderKeys.senderToReceiverDataKey.contentEquals(senderKeys.receiverToSenderDataKey))
+        // S2R ENVELOPE != R2S ENVELOPE
+        assertFalse(senderKeys.senderToReceiverEnvelopeKey.contentEquals(senderKeys.receiverToSenderEnvelopeKey))
     }
 
     @Test
@@ -265,8 +276,10 @@ class HandshakeTest {
             keyDeriver,
         )
 
-        assertFalse(keysA.senderToReceiverKey.contentEquals(keysB.senderToReceiverKey))
-        assertFalse(keysA.receiverToSenderKey.contentEquals(keysB.receiverToSenderKey))
+        assertFalse(keysA.senderToReceiverDataKey.contentEquals(keysB.senderToReceiverDataKey))
+        assertFalse(keysA.receiverToSenderDataKey.contentEquals(keysB.receiverToSenderDataKey))
+        assertFalse(keysA.senderToReceiverEnvelopeKey.contentEquals(keysB.senderToReceiverEnvelopeKey))
+        assertFalse(keysA.receiverToSenderEnvelopeKey.contentEquals(keysB.receiverToSenderEnvelopeKey))
         assertNotEquals(keysA.transcriptHash, keysB.transcriptHash)
     }
 
