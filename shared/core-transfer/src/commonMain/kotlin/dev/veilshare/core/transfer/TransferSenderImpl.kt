@@ -12,6 +12,8 @@ import dev.veilshare.core.model.TransferComplete
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferId
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 
@@ -85,7 +87,9 @@ class DefaultTransferSender(
             completeWithRetry(transferIdHash, fileIdHash, totalChunks, sender)
             return TransferResult(totalChunks, bytesSent)
         } finally {
-            source.close()
+            withContext(NonCancellable) {
+                source.close()
+            }
         }
     }
 
@@ -116,7 +120,7 @@ class DefaultTransferSender(
                 return
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
                 if (!isRetryableTransportFailure(e)) {
                     throw e
                 }
