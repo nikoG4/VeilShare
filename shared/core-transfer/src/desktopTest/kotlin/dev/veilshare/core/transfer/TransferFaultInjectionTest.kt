@@ -54,13 +54,11 @@ class TransferFaultInjectionTest {
         val result = receiver.receive(chunk0)
         assertTrue(result is dev.veilshare.core.transfer.ReceiveResult.ChunkAccepted)
         
-        // Verify incomplete transfer doesn't return TransferComplete
-        val importSource = receiver.getImportSource(transferId, fileId)
-        assertNotNull(importSource)
-        val handle = importSource.openRead()
-        val data = handle.read(100)
-        assertEquals(10, data.size)
-        handle.close()
+        // Verify incomplete transfer rejects getImportSource
+        val error = assertFailsWith<IllegalStateException> {
+            receiver.getImportSource(transferId, fileId)
+        }
+        assertTrue(error.message?.contains("Transfer is not complete") == true)
     }
 
     @Test fun corruptedPayloadRejected() = runTest {
@@ -113,15 +111,33 @@ class TransferFaultInjectionTest {
             receiver.receive(chunk)
         }
         
+        // Verify incomplete transfer rejects getImportSource
+        val error = assertFailsWith<IllegalStateException> {
+            receiver.getImportSource(transferId, fileId)
+        }
+        assertTrue(error.message?.contains("Transfer is not complete") == true)
+        
+        // Complete the transfer and verify it now works
+        val chunk2 = dev.veilshare.core.model.TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 2,
+            totalChunks = 3,
+            ciphertext = ByteArray(10) { 3 },
+            nonce = ByteArray(12) { 0 },
+        )
+        val completeResult = receiver.receive(chunk2)
+        assertTrue(completeResult is dev.veilshare.core.transfer.ReceiveResult.TransferComplete)
+        
         val importSource = receiver.getImportSource(transferId, fileId)
         assertNotNull(importSource)
         val handle = importSource.openRead()
         val data0 = handle.read(100)
         val data1 = handle.read(100)
+        val data2 = handle.read(100)
         assertEquals(10, data0.size)
         assertEquals(10, data1.size)
-        
-        // Third chunk never received - just close handle without waiting for EOF
+        assertEquals(10, data2.size)
         handle.close()
     }
 

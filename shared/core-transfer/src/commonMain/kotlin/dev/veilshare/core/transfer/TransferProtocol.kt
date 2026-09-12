@@ -12,8 +12,15 @@ object TransferProtocol {
     const val MAX_ACTIVE_TRANSFERS = 2
     const val MAX_BUFFERED_CIPHERTEXT_BYTES = 64L * 1024L * 1024L
     const val AEAD_OVERHEAD_ALLOWANCE = 64
+    const val MAX_FRAGMENTS_PER_CHUNK = 16
     private const val DATA_AAD_DIRECTION_SENDER_TO_RECEIVER = 1
     private const val DATA_AAD_DOMAIN = "VEILSHARE-DATA-AAD-V1"
+
+    /**
+     * Maximum payload size for a single transport frame (TransferData + PeerEnvelope + RelayRequest JSON overhead).
+     * Leaves headroom for JSON framing and base64 encoding expansion (~33%).
+     */
+    const val MAX_TRANSPORT_FRAME_PAYLOAD = 48 * 1024 // 48 KiB
 
     fun createNonce(random: SecureRandom): Nonce = Nonce(random.bytes(NONCE_SIZE))
 
@@ -88,6 +95,7 @@ data class TransferConfig(
     val baseRetryDelayMs: Long = 500,
     val maxRetryDelayMs: Long = 10_000,
     val retryBackoffMultiplier: Double = 2.0,
+    val maxTransportFramePayload: Int = TransferProtocol.MAX_TRANSPORT_FRAME_PAYLOAD,
 ) {
     init {
         require(chunkSize > 0)
@@ -99,6 +107,7 @@ data class TransferConfig(
         require(baseRetryDelayMs >= 0)
         require(maxRetryDelayMs >= baseRetryDelayMs)
         require(retryBackoffMultiplier >= 1.0)
+        require(maxTransportFramePayload > 0)
     }
 }
 

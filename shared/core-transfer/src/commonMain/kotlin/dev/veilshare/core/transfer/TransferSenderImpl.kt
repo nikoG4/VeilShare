@@ -82,7 +82,7 @@ class DefaultTransferSender(
                     nonce = nonce.bytes,
                 )
 
-                sendWithRetry(transferData, sender)
+                sendWithFragmentation(transferData, sender)
                 bytesSent += chunk.size.toLong()
                 chunkIndex++
             }
@@ -100,6 +100,41 @@ class DefaultTransferSender(
         retryTransport("chunk ${data.chunkIndex}") {
             sender.send(data)
         }
+    }
+
+    private suspend fun sendWithFragmentation(data: TransferData, sender: TransferNetworkSender) {
+        val fragmentCount = calculateFragmentCount(data)
+        if (fragmentCount <= 1) {
+            sendWithRetry(data, sender)
+            return
+        }
+        require(fragmentCount <= TransferProtocol.MAX_FRAGMENTS_PER_CHUNK) {
+            "Chunk ${data.chunkIndex} requires $fragmentCount fragments, exceeds max ${TransferProtocol.MAX_FRAGMENTS_PER_CHUNK}"
+        }
+
+        val fragmentSize = (data.ciphertext.size + fragmentCount - 1) / fragmentCount
+        for (i in 0 until fragmentCount) {
+            val start = i * fragmentSize
+            val end = minOf(start + fragmentSize, data.ciphertext.size)
+            val fragmentCiphertext = data.ciphertext.copyOfRange(start, end)
+            val fragment = data.copy(
+                ciphertext = fragmentCiphertext,
+                fragmentIndex = i,
+                fragmentCount = fragmentCount,
+            )
+            sendWithRetry(fragment, sender)
+        }
+    }
+
+    private fun calculateFragmentCount(data: TransferData): Int {
+        val serialized = serializeToBytes(serializer<TransferData>(), data)
+        val maxPayload = config.maxTransportFramePayload
+        if (serialized.size <= maxPayload) {
+            return 1
+        }
+        // Estimate fragments needed based on size ratio using integer math
+        val ratio = (serialized.size + maxPayload - 1) / maxPayload
+        return minOf(ratio, TransferProtocol.MAX_FRAGMENTS_PER_CHUNK)
     }
 
     private suspend fun completeWithRetry(

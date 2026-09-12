@@ -245,6 +245,8 @@ data class TransferData(
     val totalChunks: Int,
     val ciphertext: ByteArray,
     val nonce: ByteArray,
+    val fragmentIndex: Int = 0,
+    val fragmentCount: Int = 1,
     val protocolVersion: Int = SharingProtocol.VERSION,
 ) {
     init {
@@ -256,6 +258,9 @@ data class TransferData(
         require(chunkIndex < totalChunks)
         require(ciphertext.isNotEmpty() && ciphertext.size <= SharingProtocol.MAX_PEER_PAYLOAD_BYTES)
         require(nonce.size == 12) // ChaCha20-Poly1305 nonce
+        require(fragmentIndex >= 0)
+        require(fragmentCount > 0)
+        require(fragmentIndex < fragmentCount)
     }
 }
 

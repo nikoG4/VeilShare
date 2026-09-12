@@ -177,10 +177,11 @@ class InMemoryTransferReceiver(
         progressRegistry.update { it - transferIdHash }
     }
 
-    private data class EncryptedChunk(
+    private data class EncryptedFragment(
         val ciphertext: ByteArray,
         val nonce: ByteArray,
-        val chunkIndex: Int,
+        val fragmentIndex: Int,
+        val fragmentCount: Int,
     )
 
     private inner class TransferState(
@@ -193,7 +194,7 @@ class InMemoryTransferReceiver(
         private val stateMutex = newMutex()
         private var state: TransferStateEnum = TransferStateEnum.NEW
         private val receivedChunks = BooleanArray(totalChunks)
-        private val encryptedChunks = arrayOfNulls<EncryptedChunk>(totalChunks)
+        private val encryptedFragments = Array(totalChunks) { mutableListOf<EncryptedFragment>() }
         private var receivedCount = 0
         private var bytesReceived = 0L
         private var bufferedCiphertextBytes = 0L
@@ -224,8 +225,34 @@ class InMemoryTransferReceiver(
                 return@withLock ReceiveResult.Error(metadataError)
             }
 
-            if (receivedChunks[transferData.chunkIndex]) {
-                return@withLock ReceiveResult.DuplicateChunk(transferData.chunkIndex)
+            val chunkIndex = transferData.chunkIndex
+            val fragmentIndex = transferData.fragmentIndex
+            val fragmentCount = transferData.fragmentCount
+
+            // Validate fragment bounds
+            if (fragmentIndex < 0 || fragmentIndex >= fragmentCount) {
+                state = TransferStateEnum.FAILED
+                val error = TransferError.InvalidTransferMetadata("Invalid fragmentIndex $fragmentIndex for fragmentCount $fragmentCount")
+                progressFlow.value = TransferReceiverProgress.Error(error)
+                return@withLock ReceiveResult.Error(error)
+            }
+            if (fragmentCount > TransferProtocol.MAX_FRAGMENTS_PER_CHUNK) {
+                state = TransferStateEnum.FAILED
+                val error = TransferError.InvalidTransferMetadata("fragmentCount $fragmentCount exceeds max ${TransferProtocol.MAX_FRAGMENTS_PER_CHUNK}")
+                progressFlow.value = TransferReceiverProgress.Error(error)
+                return@withLock ReceiveResult.Error(error)
+            }
+
+            val fragments = encryptedFragments[chunkIndex]
+
+            // Check for duplicate fragment
+            if (fragments.any { it.fragmentIndex == fragmentIndex }) {
+                return@withLock ReceiveResult.DuplicateChunk(chunkIndex)
+            }
+
+            // If this is the first fragment for this chunk, validate chunk not already complete
+            if (fragments.isEmpty() && receivedChunks[chunkIndex]) {
+                return@withLock ReceiveResult.DuplicateChunk(chunkIndex)
             }
 
             val prospectiveBufferedBytes = bufferedCiphertextBytes + transferData.ciphertext.size.toLong()
@@ -239,58 +266,88 @@ class InMemoryTransferReceiver(
                 return@withLock ReceiveResult.Error(error)
             }
 
-            val aad = TransferProtocol.createDataAad(
-                protocolVersion = transferData.protocolVersion,
-                transferIdHash = transferData.transferIdHash,
-                fileIdHash = transferData.fileIdHash,
-                chunkIndex = transferData.chunkIndex,
-                totalChunks = transferData.totalChunks,
-            )
-
-            val plaintext = try {
-                decryptor.decrypt(
-                    ciphertext = transferData.ciphertext,
-                    nonce = Nonce(transferData.nonce),
-                    aad = aad,
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                state = TransferStateEnum.FAILED
-                val error = TransferError.DecryptionFailed(transferData.chunkIndex)
-                progressFlow.value = TransferReceiverProgress.Error(error)
-                return@withLock ReceiveResult.Error(error)
-            }
-
-            // Authenticate immediately, but never retain plaintext in TransferState.
-            val plaintextSize = plaintext.size
-            plaintext.fill(0)
-
-            receivedChunks[transferData.chunkIndex] = true
-            encryptedChunks[transferData.chunkIndex] = EncryptedChunk(
+            // Store fragment
+            fragments.add(EncryptedFragment(
                 ciphertext = transferData.ciphertext.copyOf(),
                 nonce = transferData.nonce.copyOf(),
-                chunkIndex = transferData.chunkIndex,
-            )
-            receivedCount++
-            bytesReceived += plaintextSize.toLong()
-            bufferedCiphertextBytes = prospectiveBufferedBytes
+                fragmentIndex = fragmentIndex,
+                fragmentCount = fragmentCount,
+            ))
 
-            progressFlow.value = TransferReceiverProgress.ChunkReceived(
-                chunkIndex = transferData.chunkIndex,
-                totalChunks = totalChunks,
-                bytesReceived = bytesReceived,
-            )
+            // Check if we have all fragments for this chunk
+            if (fragments.size == fragmentCount) {
+                // Reassemble and decrypt
+                val aad = TransferProtocol.createDataAad(
+                    protocolVersion = transferData.protocolVersion,
+                    transferIdHash = transferData.transferIdHash,
+                    fileIdHash = transferData.fileIdHash,
+                    chunkIndex = chunkIndex,
+                    totalChunks = totalChunks,
+                )
 
-            val isFinal = transferData.chunkIndex == totalChunks - 1
-            if (receivedCount == totalChunks) {
-                state = TransferStateEnum.COMPLETE
-                progressFlow.value =
-                    TransferReceiverProgress.TransferComplete(totalChunks, bytesReceived)
-                return@withLock ReceiveResult.TransferComplete(totalChunks)
+                // Sort fragments by index and reassemble ciphertext
+                fragments.sortBy { it.fragmentIndex }
+                val totalSize = fragments.sumOf { it.ciphertext.size }
+                val fullCiphertext = ByteArray(totalSize)
+                var offset = 0
+                for (f in fragments) {
+                    f.ciphertext.copyInto(fullCiphertext, offset)
+                    offset += f.ciphertext.size
+                }
+                val fullNonce = fragments[0].nonce // All fragments share the same nonce
+
+                val plaintext = try {
+                    decryptor.decrypt(
+                        ciphertext = fullCiphertext,
+                        nonce = Nonce(fullNonce),
+                        aad = aad,
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    state = TransferStateEnum.FAILED
+                    val error = TransferError.DecryptionFailed(chunkIndex)
+                    progressFlow.value = TransferReceiverProgress.Error(error)
+                    return@withLock ReceiveResult.Error(error)
+                }
+
+                // Authenticate immediately, but never retain plaintext in TransferState.
+                val plaintextSize = plaintext.size
+                plaintext.fill(0)
+
+                // Replace fragments with the reassembled chunk for storage
+                encryptedFragments[chunkIndex] = mutableListOf(EncryptedFragment(
+                    ciphertext = fullCiphertext,
+                    nonce = fullNonce,
+                    fragmentIndex = 0,
+                    fragmentCount = 1,
+                ))
+
+                receivedChunks[chunkIndex] = true
+                receivedCount++
+                bytesReceived += plaintextSize.toLong()
+                bufferedCiphertextBytes = prospectiveBufferedBytes
+
+                progressFlow.value = TransferReceiverProgress.ChunkReceived(
+                    chunkIndex = chunkIndex,
+                    totalChunks = totalChunks,
+                    bytesReceived = bytesReceived,
+                )
+
+                val isFinal = chunkIndex == totalChunks - 1
+                if (receivedCount == totalChunks) {
+                    state = TransferStateEnum.COMPLETE
+                    progressFlow.value =
+                        TransferReceiverProgress.TransferComplete(totalChunks, bytesReceived)
+                    return@withLock ReceiveResult.TransferComplete(totalChunks)
+                }
+
+                ReceiveResult.ChunkAccepted(chunkIndex, isFinal)
+            } else {
+                // Fragment received, but waiting for more
+                bufferedCiphertextBytes = prospectiveBufferedBytes
+                ReceiveResult.ChunkAccepted(chunkIndex, false)
             }
-
-            ReceiveResult.ChunkAccepted(transferData.chunkIndex, isFinal)
         }
 
         private fun validateStateBinding(transferData: TransferData): TransferError? {
@@ -312,8 +369,13 @@ class InMemoryTransferReceiver(
             return null
         }
 
-        suspend fun getEncryptedChunk(chunkIndex: Int): EncryptedChunk? =
-            stateMutex.withLock { encryptedChunks[chunkIndex] }
+        suspend fun getEncryptedChunk(chunkIndex: Int): EncryptedFragment? =
+            stateMutex.withLock {
+                val fragments = encryptedFragments[chunkIndex]
+                if (fragments.isEmpty()) return@withLock null
+                // Return the reassembled fragment (fragmentCount should be 1 after reassembly)
+                fragments.firstOrNull()
+            }
 
         suspend fun isComplete(): Boolean =
             stateMutex.withLock { state == TransferStateEnum.COMPLETE }
@@ -324,8 +386,8 @@ class InMemoryTransferReceiver(
         suspend fun getTotalBytes(): Long = stateMutex.withLock { bytesReceived }
 
         suspend fun clearEncryptedChunks() = stateMutex.withLock {
-            for (i in encryptedChunks.indices) {
-                encryptedChunks[i] = null
+            for (i in encryptedFragments.indices) {
+                encryptedFragments[i].clear()
                 receivedChunks[i] = false
             }
             receivedCount = 0
@@ -398,7 +460,7 @@ class InMemoryTransferReceiver(
                         protocolVersion = state.protocolVersion,
                         transferIdHash = state.transferIdHash,
                         fileIdHash = state.fileIdHash,
-                        chunkIndex = encrypted.chunkIndex,
+                        chunkIndex = currentChunkIndex,
                         totalChunks = state.totalChunks,
                     )
                     currentPlaintext = try {
@@ -410,7 +472,7 @@ class InMemoryTransferReceiver(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        val error = TransferError.DecryptionFailed(encrypted.chunkIndex)
+                        val error = TransferError.DecryptionFailed(currentChunkIndex)
                         importProgress.value = TransferImportProgress.Error(error)
                         cleanupOnce()
                         throw TransferException(error, e)
@@ -419,6 +481,8 @@ class InMemoryTransferReceiver(
                     importProgress.value =
                         TransferImportProgress.ChunkReady(currentChunkIndex, state.totalChunks)
                 }
+                // Unreachable, but satisfies compiler return type analysis
+                return@withLock ByteArray(0)
             }
 
             override suspend fun close() {
