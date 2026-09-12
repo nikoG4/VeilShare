@@ -1,556 +1,195 @@
-# Sharing / Signaling Protocol V1 (Corrected)
+# VeilShare Sharing Protocol V1
 
-Date: 2026-08-15
-Author: VeilShare Agent
-Version: V1 CORRECTED
+Status: active implementation overview.
 
-## Overview
+This file is the top-level index for Sharing V1. Detailed normative behavior is split into:
 
-Protocol V1 enables file sharing between two VeilShare clients via a signaling server. The server coordinates rendezvous but does not store content or keys.
+- `HANDSHAKE_CONTRACT.md` — authenticated Ed25519/X25519 handshake, canonical transcript and transcript-bound HKDF.
+- `TRANSFER_PROTOCOL_V1.md` — OFFER/ACCEPT/REJECT/DATA/COMPLETE/CANCEL/FAILURE, fragmentation, AAD, signaling limits, receiver lifecycle and vault import.
+- `THREAT_MODEL.md` — security assumptions and attacker model.
+- `METADATA_PRIVACY_TABLE.md` — server-visible vs E2E-only metadata.
+- `FAILURE_MODEL.md` — failure/recovery expectations.
+- `REAL_DECOY_PRIVACY.md` — REAL/DECOY privacy boundary.
 
-**Critical Corrections:**
-- Separate `SharingIdentityId` per sharing context (not common identity)
-- Random `ReferenceCode` (not derived from identity)
-- WebSocket relay only (no WebRTC in V1)
-- All metadata inside E2E channel (server blind)
-- No per-chunk ACKs (full restart on disconnect)
+The detailed contract files win if an older design note conflicts with this overview.
 
-## Protocol Version
+## Goals
+
+Sharing V1 transfers one file at a time between VeilShare peers while keeping content and sensitive file metadata end-to-end protected from the signaling server.
+
+The server provides ephemeral presence/lookup and blind WebSocket relay. It is not trusted with:
+
+- plaintext files;
+- filenames or MIME metadata;
+- vault keys;
+- transfer session keys;
+- REAL/DECOY vault labels;
+- decrypted vault state.
+
+## Identity and routing
+
+### SharingIdentityId
+
+A sharing identity is separate from vault identity/key material.
+
+It has an Ed25519 key pair used to authenticate handshake messages.
+
+### ReferenceCode
+
+A `ReferenceCode` is a random human-readable routing token. It is not derived from a vault key, device ID, hardware fingerprint, or public identity.
+
+Lookup returns the peer sharing identity/public key required by the higher-level trust/contact workflow.
+
+**Security rule:** a lookup result alone must not silently become a trusted/pinned contact key. The handshake verifies against the expected key supplied by the contact/trust layer.
+
+## Wire layers
 
 ```
-protocolVersion = "1"
+WebSocket text frame
+  SignalingEnvelope
+    payload (Base64 ByteArray)
+      RelayRequest
+        opaquePayload (Base64 ByteArray)
+          PeerEnvelope
+            payload (Base64 ByteArray)
+              typed peer message
 ```
 
-Clients and server reject incompatible versions with clear error message.
-
-## Identity Architecture
-
-### SharingIdentityId (V1 Critical)
-
-Each sharing context has independent identity:
-
-```kotlin
-data class SharingIdentityId(
-    val value: String,        // UUID v4 string
-    val expiryAt: Long        // Optional, for rotation
-)
-```
-
-**Generation:**
-```kotlin
-val sharingIdentityId = SharingIdentityId(
-    value = SecureRandom().nextUUID().toString(),
-    expiryAt = currentTimeMillis() + sessionTTL
-)
-```
-
-**No derivation from:**
-- Public identity
-- Device ID
-- Installation ID
-- Hardware fingerprint
-
-### SharingIdentityKey
-
-Long-term identity key per context:
-
-```kotlin
-data class SharingIdentityKey(
-    val privateKey: Ed25519PrivateKey,
-    val publicKey: Ed25519PublicKey
-)
-```
-
-**Key separation:**
-- Independent from vault keys (VMK, KEK, FileKey)
-- Independent per sharing context
-- Not stored in frozen vault formats
-
-### ReferenceCode (V1 Critical)
-
-Random routing token, not identity-derived:
-
-```kotlin
-data class ReferenceCode(
-    val code: String,         // Base32 80+ bits + checksum
-    val checksum: String      // Optional Luhn checksum
-)
-```
-
-**Generation:**
-```kotlin
-val referenceCode = ReferenceCode(
-    code = randomBase32(highEntropyString), // ~80 bits
-    checksum = calculateChecksum(code) // Optional
-)
-```
-
-**Properties:**
-- Human-readable Base32
-- Checksum for typo detection
-- Rotatable and revocable
-- Not derived from identity
-
-### PublicIdentity (Separate)
-
-```kotlin
-data class PublicIdentity(
-    val id: String,              // Base64-encoded Ed25519 key
-    val fingerprint: String      // SHA-256(id) as hex
-)
-```
-
-**Use:**
-- Verification of sender authenticity
-- Optional pinning
-- Not used for routing
-
-## Message Structure
-
-### Frame Envelope (Server-visible)
-
-```json
-{
-  "v": 1,                              // protocolVersion
-  "id": "msg-uuid",                    // MessageId
-  "type": "REGISTER|UNREGISTER|LOOKUP|RELAY|PING|ERROR",
-  "sessionId": "session-uuid",         // Optional
-  "payload": {}                       // Opaque bytes
-}
-```
-
-**Envelope fields (server sees):**
-- `protocolVersion`: version check
-- `messageId`: dedup
-- `sessionId`: routing
-- `type`: routing
-
-**Envelope does NOT include:**
-- Filename
-- MIME
-- File size (explicit)
-- Digest
-- Vault type
-- REAL/DECOY label
-
-### E2E Payload (Peer-only)
-
-Encrypted/authenticated, server blind:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",       // Unique per transfer
-  "messageType": "SESSION_HELLO|OFFER|ACCEPT|DATA|COMPLETE|CANCEL",
-  "filename": "example.txt",           // E2E only
-  "mimeType": "text/plain",            // E2E only
-  "size": 123456,                      // E2E only
-  "digest": "sha256-hash",             // E2E only
-  "ciphertext": "base64-encrypted",    // E2E only
-  "authTag": "base64-auth-tag"         // E2E only
-}
-```
-
-**Payload encryption:**
-- Ephemeral session keys (X25519)
-- Transcript binding
-- AEAD
-- Independent from vault keys
-
-## Signaling Messages
-
-### REGISTER
-
-Client registers presence:
-
-```json
-{
-  "v": 1,
-  "id": "register-uuid",
-  "type": "REGISTER",
-  "payload": {
-    "sharingIdentityId": "uuid-string",
-    "referenceCode": "M7QK-...",
-    "sharingPublicKey": "base64-ed25519",
-    "protocolVersion": 1
-  }
-}
-```
-
-### UNREGISTER
-
-Client unregisters:
-
-```json
-{
-  "v": 1,
-  "id": "unregister-uuid",
-  "type": "UNREGISTER",
-  "payload": {
-    "sharingIdentityId": "uuid-string"
-  }
-}
-```
-
-### LOOKUP
-
-Request peer by reference code:
-
-```json
-{
-  "v": 1,
-  "id": "lookup-uuid",
-  "type": "LOOKUP",
-  "payload": {
-    "referenceCode": "M7QK-2P9D-V4TX-H8CN",
-    "requestorSharingIdentityId": "requester-uuid"
-  }
-}
-```
-
-**Response:**
-
-```json
-{
-  "v": 1,
-  "id": "lookup-uuid",
-  "type": "FOUND|NOT_FOUND|INVALID",
-  "payload": {
-    "sharingIdentityId": "target-uuid",   // if FOUND
-    "publicIdentity": "base64-key",       // if FOUND
-    "status": "offline"                   // if NOT_FOUND
-  }
-}
-```
-
-### RELAY
-
-Forwarded message between peers:
-
-```json
-{
-  "v": 1,
-  "id": "relay-uuid",
-  "type": "RELAY",
-  "payload": {
-    "to": "targetReferenceCode",
-    "sessionId": "session-uuid",
-    "transferId": "transfer-uuid",
-    "envelope": {
-      "type": "SESSION_HELLO|OFFER|ACCEPT|DATA|COMPLETE|CANCEL",
-      "payload": "opaque-base64"
-    }
-  }
-}
-```
-
-**Server behavior:**
-- Forward only if both endpoints authenticated
-- Do not inspect payload
-- Do not persist (ephemeral)
-- Blind relay
-
-### PING
-
-Keepalive:
-
-```json
-{
-  "v": 1,
-  "id": "ping-uuid",
-  "type": "PING",
-  "payload": {
-    "timestamp": "epoch-ms"
-  }
-}
-```
-
-### ERROR
-
-Error response:
-
-```json
-{
-  "v": 1,
-  "id": "error-uuid",
-  "type": "ERROR",
-  "payload": {
-    "errorCode": "PROTOCOL_VERSION_MISMATCH|INVALID_MESSAGE|RATE_LIMITED",
-    "details": "error-description"
-  }
-}
-```
-
-## Peer E2E Messages (Conceptual)
-
-### SESSION_HELLO
-
-Initiate transfer:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "senderSharingIdentityId": "sender-uuid",
-  "senderPublicIdentity": "base64-key",
-  "totalFiles": 1,
-  "totalBytes": 123456,
-  "protocolVersion": 1
-}
-```
-
-### SESSION_CONFIRM
-
-Receiver confirms session setup:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "type": "CONFIRM",
-  "protocolVersion": 1
-}
-```
-
-### OFFER
-
-File offer:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "type": "OFFER",
-  "files": [
-    {
-      "fileId": "file-uuid",
-      "displayName": "example.txt",
-      "mimeType": "text/plain",
-      "size": 123456
-    }
-  ],
-  "protocolVersion": 1
-}
-```
-
-### ACCEPT / REJECT
-
-Receiver response:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "type": "ACCEPT|REJECT",
-  "reason": "user-accepted|unsupported" // if REJECT
-}
-```
-
-### DATA
-
-File data chunk:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "fileId": "file-uuid",
-  "chunkIndex": 0,
-  "nonce": "ephemeral-nonce",
-  "ciphertext": "base64-encrypted-chunk",
-  "authTag": "base64-auth-tag",
-  "protocolVersion": 1
-}
-```
-
-**Note:** No per-chunk ACK. Full restart on disconnect.
-
-### COMPLETE
-
-Transfer complete:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "type": "COMPLETE",
-  "receivedFiles": 1,
-  "protocolVersion": 1
-}
-```
-
-### CANCEL
-
-Cancel transfer:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "type": "CANCEL",
-  "protocolVersion": 1
-}
-```
-
-### FAILURE
-
-Error:
-
-```json
-{
-  "version": 1,
-  "transferId": "transfer-uuid",
-  "sessionId": "session-uuid",
-  "type": "FAILURE",
-  "errorCode": "DECORPORATED|TIMEOUT|ERROR",
-  "protocolVersion": 1
-}
-```
+Binary fields use the common `Base64ByteArraySerializer` to avoid platform-dependent JSON arrays and uncontrolled nested JSON expansion.
+
+## Signaling messages
+
+Server-visible message types:
+
+- `REGISTER`
+- `UNREGISTER`
+- `LOOKUP`
+- `RELAY`
+- `PING`
+- `ERROR`
+
+The signaling envelope exposes routing/timing/size information. It must not expose E2E file metadata.
+
+Current signaling envelope raw payload limit is 64 KiB.
+
+RELAY has its own per-connection fixed-window message+byte budget; it does not consume the session-creation limiter.
+
+## Peer messages
+
+Peer envelope message types:
+
+1. `SESSION_HELLO`
+2. `SESSION_CONFIRM`
+3. `SESSION_CONFIRM_ACK`
+4. `OFFER`
+5. `ACCEPT`
+6. `REJECT`
+7. `DATA`
+8. `COMPLETE`
+9. `CANCEL`
+10. `FAILURE`
+
+`PeerMessageCodec` is the canonical typed JSON codec for these payloads.
+
+`PeerSessionGate` verifies envelope session/transfer identity and inner transfer/file hashes before DATA/control reaches the receiver.
+
+## Handshake summary
+
+The long-term sharing identity uses Ed25519. Each session uses fresh X25519 ephemeral keys.
+
+All three handshake stages are authenticated:
+
+- HELLO signed by sender identity;
+- CONFIRM signed by receiver identity and binds receiver ephemeral;
+- CONFIRM_ACK signed by sender identity and binds sender ephemeral + complete transcript hash.
+
+The canonical transcript contains both sharing identity hashes, session hash and both ephemeral public keys.
+
+Directional traffic keys are derived with HKDF-SHA-256 from the X25519 shared secret and canonical transcript hash.
+
+See `HANDSHAKE_CONTRACT.md` for exact bytes/domain separation.
+
+## Offer/accept summary
+
+`TransferOffer` carries E2E-only validated metadata:
+
+- FileId;
+- display name;
+- optional MIME hint;
+- byte size;
+- total crypto chunks.
+
+V1 rejects empty files.
+
+The receiver can accept or reject the offered file. File metadata is bounded/canonical before it can reach the vault/UI boundary.
+
+## DATA summary
+
+Default plaintext crypto chunk size is 1 MiB.
+
+Each logical chunk is encrypted with ChaCha20-Poly1305 under a transcript-bound per-session directional key.
+
+Canonical AAD binds:
+
+- protocol version;
+- direction;
+- transfer-id hash;
+- file-id hash;
+- chunk index;
+- total chunks.
+
+Transport fragmentation occurs after encryption. A crypto chunk may be split into multiple smaller `TransferData` frames and is reassembled before AEAD verification.
+
+Current target serialized TransferData frame size is 16 KiB; maximum fragments per crypto chunk is 128.
+
+## Retry model
+
+No per-chunk ACK protocol is required in V1.
+
+Transient send failure retries the same already-encrypted logical data/frame. Cancellation and security/protocol failures are not retried as transport faults.
+
+On process death or lost session, V1 may restart the transfer rather than resume partially persisted network state.
+
+## Receiver and vault
+
+Receiver state is deliberately bounded while whole-transfer encrypted buffering remains in use:
+
+- at most 2 active transfers;
+- at most 64 MiB buffered ciphertext per transfer;
+- idle and absolute lifetime cleanup;
+- explicit abort;
+- single-consumer `COMPLETE -> IMPORTING` transition.
+
+The receiver does not retain an entire plaintext file.
+
+`ReceivedTransferVaultImporter` bridges a completed transfer into the existing crash-safe vault import path. The authenticated received size must match `TransferOffer.sizeBytes` before consumption.
+
+Vault import then owns VBL1 encryption, journal durability, encrypted catalog commit and recovery semantics.
+
+## REAL / DECOY boundary
+
+Sharing must never reveal which local vault is REAL versus DECOY to the signaling server or peer protocol.
+
+The application chooses the currently unlocked vault locally and passes only its `VaultHandle` to the import boundary.
+
+No vault slot descriptor or vault type travels through sharing messages.
 
 ## Versioning
 
-Current: `protocolVersion = 1`
+`SharingProtocol.VERSION = 1`.
 
-Breaking changes require incrementing version:
-- Message format changes
-- New message types
-- Security enhancements
+Because V1 has not yet been frozen/released, incompatible wire corrections may still be made on the hardening branch. Once `SHARING_V1_BASELINE_FROZEN` is declared, any incompatible message/crypto encoding change requires a protocol-version strategy rather than silent mutation.
 
-Clients reject incompatible versions with:
+## Current freeze blockers
 
-```json
-{
-  "v": 1,
-  "id": "error-uuid",
-  "type": "ERROR",
-  "payload": {
-    "errorCode": "PROTOCOL_VERSION_MISMATCH",
-    "details": "Your client uses version 1.0, this server requires 1.0"
-  }
-}
-```
+Before declaring the V1 baseline frozen:
 
-## Handshake Contract (Conceptual)
+- latest branch must compile/test on Desktop and Android;
+- handshake negative tests must pass;
+- real handshake-derived-key -> encrypted transfer -> durable vault E2E must pass;
+- signaling relay size/rate-limit tests must pass;
+- receiver lifecycle/abort/single-import tests must pass;
+- full frozen vault regression must remain green;
+- iOS native compilation remains a separate macOS/Xcode verification item.
 
-### Long-Term Identity
-
-- Ed25519 per sharing context
-- Independent per context
-- Not derived from vault keys
-- Rotatable
-
-### Ephemeral Session Keys
-
-- X25519 per session
-- Transcript binding with HKDF-SHA-256
-- AEAD per direction
-- Independent keys
-
-### Transcript Binding
-
-Binds:
-- protocolVersion
-- sender identity
-- receiver identity
-- SessionId
-- TransferId
-- ephemeral keys
-
-### Replay Resistance
-
-- Session uniqueness
-- Nonces/signatures
-- Monotonic sequence numbers
-
-### Key Separation
-
-- Transfer traffic keys independent
-- Not VMK, KEK, FileKey
-- Not catalog keys
-- Separate per session
-
-## Idempotency
-
-- **TransferId** unique per transfer attempt
-- **(transferId, fileId, chunkIndex)** unique triple for chunks
-- Duplicate chunk: validate → discard if durable → ACK
-- Duplicate SESSION_HELLO: sender cancels or ignores (race)
-- Receiver cancel after catalog commit: file exists, ignore cancel
-
-## Security Boundaries
-
-### Server Sees (Envelope Only)
-
-- Encrypted frames (via WebSocket)
-- Frame sizes
-- Timing
-- Reference codes (routing)
-- SharingIdentityIds (routing)
-- Coarse transfer sizes
-
-### Server Does NOT See (E2E)
-
-- Plaintext file contents
-- File names (in E2E channel)
-- FileKeys
-- VaultKeys
-- E2E session keys
-- Vault type
-- REAL/DECOY labels
-- SharingIdentity key material
-
-### Peer-to-Peer Channel
-
-- All transfer messages E2E encrypted
-- Session keys derived per-transfer
-- Transcript hash provides forward secrecy
-- Signature over transcript authenticates transcript
-
----
-
-## Message Flow
-
-### Initiate Transfer
-
-```
-Sender → Signaling: REGISTER(sharingIdentity, referenceCode)
-  ↓
-Signaling: LOOKUP(referenceCode)
-  ↓
-Signaling → Sender: FOUND(targetSharingIdentity)
-  ↓
-Sender → Signaling: SESSION_HELLO
-  ↓
-Signaling → Receiver: RELAY(SESSION_HELLO)
-  ↓
-Receiver → Signaling: SESSION_ACCEPT
-  ↓
-Signaling → Sender: RELAY(SESSION_ACCEPT)
-  ↓
-Sender → Receiver: DATA*
-  ↓
-Sender → Receiver: COMPLETE
-  ↓
-Receiver → Sender: COMPLETE
-```
-
-### Cancel Flow
-
-```
-Sender → Receiver: CANCEL
-  ↓
-Receiver: discard pending data
-  ↓
-Sender: stop sending
-```
-
----
-
-**Next Action:** Create HANDSHAKE_CONTRACT.md for precise security specifications.
+Do not claim `SHARING_V1_BASELINE_FROZEN` from static review alone.
