@@ -9,6 +9,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.TimeSource
+
+fun interface TransferClock {
+    fun nowMillis(): Long
+}
+
+private object MonotonicTransferClock : TransferClock {
+    private val origin = TimeSource.Monotonic.markNow()
+    override fun nowMillis(): Long = origin.elapsedNow().inWholeMilliseconds
+}
 
 interface TransferDecryptor {
     suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce): ByteArray
@@ -22,6 +32,15 @@ interface TransferReceiver {
     suspend fun receive(transferData: TransferData): ReceiveResult
     suspend fun getImportSource(transferId: TransferId, fileId: FileId): TransferImportSource
     fun getProgress(transferId: TransferId): StateFlow<TransferReceiverProgress?>
+
+    /**
+     * Aborts a buffered transfer by its protocol hash. Importing transfers are not
+     * abortable here: vault import owns the read handle until it closes.
+     */
+    suspend fun abort(transferIdHash: String, reason: String): Boolean
+
+    /** Opportunistically removes idle/over-age transfers and returns the count removed. */
+    suspend fun sweepExpired(): Int
 }
 
 sealed interface ReceiveResult {
@@ -63,6 +82,7 @@ enum class TransferStateEnum {
     NEW,
     RECEIVING,
     COMPLETE,
+    IMPORTING,
     CANCELLED,
     FAILED,
 }
@@ -70,6 +90,7 @@ enum class TransferStateEnum {
 class InMemoryTransferReceiver(
     private val decryptor: TransferDecryptor,
     private val config: TransferConfig = TransferConfig(),
+    private val clock: TransferClock = MonotonicTransferClock,
 ) : TransferReceiver {
 
     private val activeTransfers = mutableMapOf<String, TransferState>()
@@ -80,10 +101,14 @@ class InMemoryTransferReceiver(
         MutableStateFlow<Map<String, MutableStateFlow<TransferReceiverProgress?>>>(emptyMap())
 
     override suspend fun receive(transferData: TransferData): ReceiveResult {
+        // A peer that disappears after one fragment must not permanently consume the very
+        // small active-transfer budget. Cleanup is cheap because the map is intentionally tiny.
+        sweepExpired()
         validateBeforeAllocation(transferData)?.let { return ReceiveResult.Error(it) }
 
         val transferIdHash = transferData.transferIdHash
         var capacityExceeded = false
+        val now = clock.nowMillis()
         val state = mapMutex.withLock {
             activeTransfers[transferIdHash] ?: run {
                 if (activeTransfers.size >= config.maxActiveTransfers) {
@@ -95,6 +120,7 @@ class InMemoryTransferReceiver(
                         fileIdHash = transferData.fileIdHash,
                         protocolVersion = transferData.protocolVersion,
                         totalChunks = transferData.totalChunks,
+                        createdAtMillis = now,
                         progressFlow = getOrCreateProgressFlow(transferIdHash),
                     ).also { activeTransfers[transferIdHash] = it }
                 }
@@ -136,6 +162,32 @@ class InMemoryTransferReceiver(
     override fun getProgress(transferId: TransferId): StateFlow<TransferReceiverProgress?> {
         val transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
         return getOrCreateProgressFlow(transferIdHash)
+    }
+
+    override suspend fun abort(transferIdHash: String, reason: String): Boolean {
+        require(transferIdHash.isNotBlank()) { "transferIdHash is required" }
+        require(reason.isNotBlank()) { "abort reason is required" }
+
+        val state = mapMutex.withLock { activeTransfers[transferIdHash] } ?: return false
+        if (!state.cancel(reason)) return false
+        cleanupTransfer(transferIdHash, state)
+        return true
+    }
+
+    override suspend fun sweepExpired(): Int {
+        val now = clock.nowMillis()
+        val snapshot = mapMutex.withLock { activeTransfers.toMap() }
+        var removed = 0
+        for ((transferIdHash, state) in snapshot) {
+            val expiration = state.expireIfNeeded(
+                nowMillis = now,
+                idleTimeoutMs = config.idleTimeoutMs,
+                maxLifetimeMs = config.maxLifetimeMs,
+            ) ?: continue
+            cleanupTransfer(transferIdHash, state)
+            removed++
+        }
+        return removed
     }
 
     private fun validateBeforeAllocation(transferData: TransferData): TransferError? {
@@ -200,6 +252,7 @@ class InMemoryTransferReceiver(
         val fileIdHash: String,
         val protocolVersion: Int,
         val totalChunks: Int,
+        private val createdAtMillis: Long,
         val progressFlow: MutableStateFlow<TransferReceiverProgress?>,
     ) {
         private val stateMutex = newMutex()
@@ -209,13 +262,14 @@ class InMemoryTransferReceiver(
         private var receivedCount = 0
         private var bytesReceived = 0L
         private var bufferedCiphertextBytes = 0L
+        private var lastActivityMillis = createdAtMillis
 
         suspend fun processChunk(
             transferData: TransferData,
             decryptor: TransferDecryptor,
         ): ReceiveResult = stateMutex.withLock {
             when (state) {
-                TransferStateEnum.COMPLETE ->
+                TransferStateEnum.COMPLETE, TransferStateEnum.IMPORTING ->
                     return@withLock ReceiveResult.Error(
                         TransferError.TransferCancelled("Transfer already completed"),
                     )
@@ -294,6 +348,7 @@ class InMemoryTransferReceiver(
 
             if (fragments.size != fragmentCount) {
                 bufferedCiphertextBytes = prospectiveBufferedBytes
+                lastActivityMillis = clock.nowMillis()
                 return@withLock ReceiveResult.ChunkAccepted(chunkIndex, false)
             }
 
@@ -368,6 +423,7 @@ class InMemoryTransferReceiver(
             receivedCount++
             bytesReceived += plaintextSize.toLong()
             bufferedCiphertextBytes = prospectiveBufferedBytes
+            lastActivityMillis = clock.nowMillis()
 
             progressFlow.value = TransferReceiverProgress.ChunkReceived(
                 chunkIndex = chunkIndex,
@@ -426,6 +482,48 @@ class InMemoryTransferReceiver(
 
         suspend fun getTotalBytes(): Long = stateMutex.withLock { bytesReceived }
 
+        suspend fun beginImport(): Boolean = stateMutex.withLock {
+            if (state != TransferStateEnum.COMPLETE) return@withLock false
+            state = TransferStateEnum.IMPORTING
+            lastActivityMillis = clock.nowMillis()
+            true
+        }
+
+        suspend fun cancel(reason: String): Boolean = stateMutex.withLock {
+            when (state) {
+                TransferStateEnum.NEW, TransferStateEnum.RECEIVING, TransferStateEnum.COMPLETE -> {
+                    state = TransferStateEnum.CANCELLED
+                    progressFlow.value =
+                        TransferReceiverProgress.Error(TransferError.TransferCancelled(reason))
+                    true
+                }
+                TransferStateEnum.IMPORTING,
+                TransferStateEnum.CANCELLED,
+                TransferStateEnum.FAILED -> false
+            }
+        }
+
+        suspend fun expireIfNeeded(
+            nowMillis: Long,
+            idleTimeoutMs: Long,
+            maxLifetimeMs: Long,
+        ): TransferError.TransferExpired? = stateMutex.withLock {
+            if (state == TransferStateEnum.IMPORTING || state == TransferStateEnum.CANCELLED || state == TransferStateEnum.FAILED) {
+                return@withLock null
+            }
+            val idleFor = nowMillis - lastActivityMillis
+            val age = nowMillis - createdAtMillis
+            val reason = when {
+                age >= maxLifetimeMs -> "Transfer exceeded maximum lifetime"
+                idleFor >= idleTimeoutMs -> "Transfer idle timeout"
+                else -> return@withLock null
+            }
+            state = TransferStateEnum.CANCELLED
+            val error = TransferError.TransferExpired(reason)
+            progressFlow.value = TransferReceiverProgress.Error(error)
+            error
+        }
+
         suspend fun clearEncryptedChunks() = stateMutex.withLock {
             for (i in encryptedFragments.indices) {
                 for (fragment in encryptedFragments[i]) {
@@ -459,6 +557,7 @@ class InMemoryTransferReceiver(
 
         override suspend fun openRead(): TransferImportReadHandle = sourceMutex.withLock {
             check(!opened) { "Transfer import source can only be opened once" }
+            check(state.beginImport()) { "Transfer is no longer available for import" }
             opened = true
             TransferImportReadHandleImpl()
         }
