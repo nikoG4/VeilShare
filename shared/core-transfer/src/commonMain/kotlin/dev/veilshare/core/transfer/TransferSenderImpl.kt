@@ -17,7 +17,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 
-private val jsonEncoder = Json { ignoreUnknownKeys = true }
+// Match the signaling client's wire behavior so size checks are conservative and reproducible.
+private val jsonEncoder = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
 private inline fun <T> serializeToBytes(serializer: kotlinx.serialization.KSerializer<T>, value: T): ByteArray =
     jsonEncoder.encodeToString(serializer, value).encodeToByteArray()
@@ -97,44 +98,71 @@ class DefaultTransferSender(
     }
 
     private suspend fun sendWithRetry(data: TransferData, sender: TransferNetworkSender) {
-        retryTransport("chunk ${data.chunkIndex}") {
+        retryTransport("chunk ${data.chunkIndex} fragment ${data.fragmentIndex + 1}/${data.fragmentCount}") {
             sender.send(data)
         }
     }
 
     private suspend fun sendWithFragmentation(data: TransferData, sender: TransferNetworkSender) {
         val fragmentCount = calculateFragmentCount(data)
-        if (fragmentCount <= 1) {
-            sendWithRetry(data, sender)
-            return
-        }
         require(fragmentCount <= TransferProtocol.MAX_FRAGMENTS_PER_CHUNK) {
             "Chunk ${data.chunkIndex} requires $fragmentCount fragments, exceeds max ${TransferProtocol.MAX_FRAGMENTS_PER_CHUNK}"
+        }
+
+        if (fragmentCount == 1) {
+            requireSerializedTransferDataFits(data)
+            sendWithRetry(data, sender)
+            return
         }
 
         val fragmentSize = (data.ciphertext.size + fragmentCount - 1) / fragmentCount
         for (i in 0 until fragmentCount) {
             val start = i * fragmentSize
             val end = minOf(start + fragmentSize, data.ciphertext.size)
-            val fragmentCiphertext = data.ciphertext.copyOfRange(start, end)
+            require(start < end) { "Fragmentation produced an empty fragment" }
+
             val fragment = data.copy(
-                ciphertext = fragmentCiphertext,
+                ciphertext = data.ciphertext.copyOfRange(start, end),
                 fragmentIndex = i,
                 fragmentCount = fragmentCount,
             )
+            requireSerializedTransferDataFits(fragment)
             sendWithRetry(fragment, sender)
         }
     }
 
+    /**
+     * Find the smallest practical fragment count whose largest serialized TransferData
+     * fits the configured transport-frame budget. Do not clamp the required count:
+     * callers must fail explicitly when MAX_FRAGMENTS_PER_CHUNK would be exceeded.
+     */
     private fun calculateFragmentCount(data: TransferData): Int {
-        val serialized = serializeToBytes(serializer<TransferData>(), data)
         val maxPayload = config.maxTransportFramePayload
-        if (serialized.size <= maxPayload) {
-            return 1
+        val serialized = serializeToBytes(serializer<TransferData>(), data)
+        if (serialized.size <= maxPayload) return 1
+
+        var fragmentCount = maxOf(2, (serialized.size + maxPayload - 1) / maxPayload)
+        while (fragmentCount <= TransferProtocol.MAX_FRAGMENTS_PER_CHUNK) {
+            val fragmentSize = (data.ciphertext.size + fragmentCount - 1) / fragmentCount
+            val sampleEnd = minOf(fragmentSize, data.ciphertext.size)
+            val sample = data.copy(
+                ciphertext = data.ciphertext.copyOfRange(0, sampleEnd),
+                fragmentIndex = 0,
+                fragmentCount = fragmentCount,
+            )
+            if (serializeToBytes(serializer<TransferData>(), sample).size <= maxPayload) {
+                return fragmentCount
+            }
+            fragmentCount++
         }
-        // Estimate fragments needed based on size ratio using integer math
-        val ratio = (serialized.size + maxPayload - 1) / maxPayload
-        return minOf(ratio, TransferProtocol.MAX_FRAGMENTS_PER_CHUNK)
+        return fragmentCount
+    }
+
+    private fun requireSerializedTransferDataFits(data: TransferData) {
+        val actual = serializeToBytes(serializer<TransferData>(), data).size
+        require(actual <= config.maxTransportFramePayload) {
+            "Serialized TransferData is $actual bytes, exceeds frame budget ${config.maxTransportFramePayload}"
+        }
     }
 
     private suspend fun completeWithRetry(
@@ -228,21 +256,15 @@ class SignalingTransferNetworkSender(
 ) : TransferNetworkSender {
 
     override suspend fun send(data: TransferData) {
-        val envelope = PeerEnvelope(
-            protocolVersion = SharingProtocol.VERSION,
-            messageType = dev.veilshare.core.model.PeerMessageType.DATA,
-            sessionId = sessionId,
-            transferId = transferId,
-            payload = serializeToBytes(serializer<TransferData>(), data),
+        relayPeerEnvelope(
+            PeerEnvelope(
+                protocolVersion = SharingProtocol.VERSION,
+                messageType = dev.veilshare.core.model.PeerMessageType.DATA,
+                sessionId = sessionId,
+                transferId = transferId,
+                payload = serializeToBytes(serializer<TransferData>(), data),
+            ),
         )
-
-        val relayRequest = RelayRequest(
-            toReferenceCode = peerReferenceCode,
-            sessionId = sessionId,
-            opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope),
-        )
-
-        signalingClient.relay(relayRequest)
     }
 
     override suspend fun complete(transferIdHash: String, fileIdHash: String, totalChunks: Int) {
@@ -251,22 +273,15 @@ class SignalingTransferNetworkSender(
             fileIdHash = fileIdHash,
             totalChunks = totalChunks,
         )
-
-        val envelope = PeerEnvelope(
-            protocolVersion = SharingProtocol.VERSION,
-            messageType = dev.veilshare.core.model.PeerMessageType.COMPLETE,
-            sessionId = sessionId,
-            transferId = transferId,
-            payload = serializeToBytes(serializer<TransferComplete>(), complete),
+        relayPeerEnvelope(
+            PeerEnvelope(
+                protocolVersion = SharingProtocol.VERSION,
+                messageType = dev.veilshare.core.model.PeerMessageType.COMPLETE,
+                sessionId = sessionId,
+                transferId = transferId,
+                payload = serializeToBytes(serializer<TransferComplete>(), complete),
+            ),
         )
-
-        val relayRequest = RelayRequest(
-            toReferenceCode = peerReferenceCode,
-            sessionId = sessionId,
-            opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope),
-        )
-
-        signalingClient.relay(relayRequest)
     }
 
     override suspend fun cancel(transferIdHash: String, reason: String) {
@@ -274,20 +289,36 @@ class SignalingTransferNetworkSender(
             transferIdHash = transferIdHash,
             reason = reason,
         )
-
-        val envelope = PeerEnvelope(
-            protocolVersion = SharingProtocol.VERSION,
-            messageType = dev.veilshare.core.model.PeerMessageType.CANCEL,
-            sessionId = sessionId,
-            transferId = transferId,
-            payload = serializeToBytes(serializer<TransferCancel>(), cancel),
+        relayPeerEnvelope(
+            PeerEnvelope(
+                protocolVersion = SharingProtocol.VERSION,
+                messageType = dev.veilshare.core.model.PeerMessageType.CANCEL,
+                sessionId = sessionId,
+                transferId = transferId,
+                payload = serializeToBytes(serializer<TransferCancel>(), cancel),
+            ),
         )
+    }
+
+    private suspend fun relayPeerEnvelope(envelope: PeerEnvelope) {
+        val opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope)
+        require(opaquePayload.size <= SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES) {
+            "Serialized PeerEnvelope is ${opaquePayload.size} bytes, exceeds relay opaque-payload limit ${SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES}"
+        }
 
         val relayRequest = RelayRequest(
             toReferenceCode = peerReferenceCode,
             sessionId = sessionId,
-            opaquePayload = serializeToBytes(serializer<PeerEnvelope>(), envelope),
+            opaquePayload = opaquePayload,
         )
+
+        // KtorSignalingClient serializes RelayRequest into SignalingEnvelope.payload,
+        // whose raw-byte limit is also 64 KiB. Check the exact representation here so
+        // transport framing cannot rely on an optimistic size estimate.
+        val serializedRelayRequest = serializeToBytes(serializer<RelayRequest>(), relayRequest)
+        require(serializedRelayRequest.size <= SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES) {
+            "Serialized RelayRequest is ${serializedRelayRequest.size} bytes, exceeds signaling-envelope payload limit ${SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES}"
+        }
 
         signalingClient.relay(relayRequest)
     }
