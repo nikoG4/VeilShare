@@ -51,6 +51,9 @@ data class TrustedContact(
         require(pinnedPublicKey.size == PeerIdentityCandidate.ED25519_PUBLIC_KEY_BYTES) {
             "Pinned Ed25519 public key must be 32 bytes"
         }
+        require(Fingerprint(Hash.sha256(pinnedPublicKey).toHex()) == fingerprint) {
+            "Pinned fingerprint does not match public key"
+        }
     }
 
     fun deepCopy(): TrustedContact = copy(pinnedPublicKey = pinnedPublicKey.copyOf())
@@ -189,6 +192,12 @@ class TrustedContactManager(
             return@withLock existing
         }
 
+        candidate.referenceCode?.let { code ->
+            require(store.findByReferenceCode(code) == null) {
+                "Reference code is already associated with another trusted contact"
+            }
+        }
+
         val contact = TrustedContact(
             contactId = ContactId(OpaqueIds.fromRandom(random)),
             alias = safeAlias,
@@ -212,6 +221,17 @@ class TrustedContactManager(
         verificationMethod: ContactVerificationMethod,
     ): TrustedContact = mutex.withLock {
         val current = requireNotNull(store.get(contactId)) { "Contact not found" }
+        val identityOwner = store.findByIdentity(candidate.sharingIdentityId)
+        require(identityOwner == null || identityOwner.contactId == contactId) {
+            "Candidate identity is already pinned to another contact"
+        }
+        candidate.referenceCode?.let { code ->
+            val routeOwner = store.findByReferenceCode(code)
+            require(routeOwner == null || routeOwner.contactId == contactId) {
+                "Candidate reference code is already associated with another contact"
+            }
+        }
+
         val replacement = current.copy(
             sharingIdentityId = candidate.sharingIdentityId,
             pinnedPublicKey = candidate.publicKey.bytes.copyOf(),
@@ -229,6 +249,10 @@ class TrustedContactManager(
         referenceCode: ReferenceCode,
     ): TrustedContact = mutex.withLock {
         val current = requireNotNull(store.get(contactId)) { "Contact not found" }
+        val routeOwner = store.findByReferenceCode(referenceCode)
+        require(routeOwner == null || routeOwner.contactId == contactId) {
+            "Reference code is already associated with another contact"
+        }
         val updated = current.copy(referenceCode = referenceCode)
         store.replace(updated)
         updated.deepCopy()
