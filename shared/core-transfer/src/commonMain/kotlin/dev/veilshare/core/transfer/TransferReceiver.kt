@@ -526,6 +526,8 @@ class InMemoryTransferReceiver(
                     importProgress.value =
                         TransferImportProgress.ChunkReady(currentChunkIndex, state.totalChunks)
                 }
+                // Unreachable, but satisfies compiler return type analysis
+                return@withLock ByteArray(0)
             }
 
             override suspend fun close() {

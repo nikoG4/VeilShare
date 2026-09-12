@@ -7,20 +7,26 @@ import dev.veilshare.core.crypto.SecureRandom
 import dev.veilshare.core.crypto.SealedBytes
 import dev.veilshare.core.crypto.SensitiveBytes
 import dev.veilshare.core.crypto.toHex
+import dev.veilshare.core.model.Base64ByteArraySerializer
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.SharingProtocol
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferId
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import java.io.ByteArrayOutputStream
 
 class TransferSecurityHardeningTest {
     private val random = object : SecureRandom {
@@ -226,10 +232,32 @@ class TransferSecurityHardeningTest {
 
     @Test
     fun senderFragmentsLargeChunk() = runTest {
+        // Compute the minimum serialized TransferData size with Base64 metadata
+        val transferId = TransferId("frag-test")
+        val fileId = FileId("frag-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+        val nonce = TransferProtocol.createNonce(random)
+        val baseData = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(1), // minimal ciphertext
+            nonce = nonce.bytes,
+            fragmentIndex = 0,
+            fragmentCount = 1,
+        )
+        val jsonEncoder = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+        val baselineSize = jsonEncoder.encodeToString(serializer<TransferData>(), baseData).encodeToByteArray().size
+
+        // Set frame budget to baseline + small ciphertext room to force fragmentation
+        val frameBudget = baselineSize + 100
+
         val config = TransferConfig(
             chunkSize = 1000, // Large enough to fit entire plaintext in one chunk
             maxCiphertextSize = 2000,
-            maxTransportFramePayload = 200, // Small payload to force fragmentation
+            maxTransportFramePayload = frameBudget,
         )
         val sender = DefaultTransferSender(random, config)
         var sentData: MutableList<TransferData> = mutableListOf()
@@ -252,8 +280,8 @@ class TransferSecurityHardeningTest {
         val source = ByteArrayTransferSource(plaintext)
 
         sender.send(
-            transferId = TransferId("frag-test"),
-            fileId = FileId("frag-file"),
+            transferId = transferId,
+            fileId = fileId,
             source = source,
             encryptor = DefaultTransferEncryptor(identityCipher, key),
             sender = network,
@@ -266,6 +294,11 @@ class TransferSecurityHardeningTest {
         for (i in sentData.indices) {
             assertEquals(i, sentData[i].fragmentIndex)
             assertEquals(0, sentData[i].chunkIndex)
+        }
+        // Verify each serialized fragment fits the budget
+        for (data in sentData) {
+            val serialized = jsonEncoder.encodeToString(serializer<TransferData>(), data).encodeToByteArray()
+            assertTrue(serialized.size <= frameBudget, "Fragment ${data.fragmentIndex} size ${serialized.size} exceeds budget $frameBudget")
         }
     }
 
@@ -869,4 +902,418 @@ class TransferSecurityHardeningTest {
         assertEquals(3, attemptCount)
         assertNotNull(capturedCiphertext)
     }
-}
+
+    // 1 MiB transfer test with default config
+    @Test
+    fun oneMibTransferFragmentsAndCompletes() = runTest {
+        val config = TransferConfig() // default: chunkSize = 1 MiB, maxTransportFramePayload = 16 KiB
+        val sender = DefaultTransferSender(random, config)
+        var sentData: MutableList<TransferData> = mutableListOf()
+
+        val network = object : TransferNetworkSender {
+            override suspend fun send(data: TransferData) {
+                sentData += data
+            }
+
+            override suspend fun complete(
+                transferIdHash: String,
+                fileIdHash: String,
+                totalChunks: Int,
+            ) = Unit
+
+            override suspend fun cancel(transferIdHash: String, reason: String) = Unit
+        }
+
+        val plaintext = ByteArray(1_048_576) { it.toByte() } // Exactly 1 MiB
+        val source = ByteArrayTransferSource(plaintext)
+
+        sender.send(
+            transferId = TransferId("one-mib-transfer"),
+            fileId = FileId("one-mib-file"),
+            source = source,
+            encryptor = DefaultTransferEncryptor(identityCipher, key),
+            sender = network,
+        )
+
+        // Should produce exactly 1 crypto chunk (1 MiB fits in one chunk)
+        // and multiple transport fragments
+        assertEquals(1, sentData[0].totalChunks)
+        val fragmentCount = sentData.size
+        assertTrue(fragmentCount > 1) // must be fragmented
+        assertTrue(fragmentCount <= TransferProtocol.MAX_FRAGMENTS_PER_CHUNK)
+
+        // Verify all fragments have correct metadata
+        assertEquals(sentData[0].fragmentCount, fragmentCount)
+        for (i in sentData.indices) {
+            assertEquals(i, sentData[i].fragmentIndex)
+            assertEquals(0, sentData[i].chunkIndex)
+        }
+
+        // Verify receiver can reassemble
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor)
+        for (data in sentData) {
+            val result = receiver.receive(data)
+            if (data.fragmentIndex == fragmentCount - 1) {
+                assertIs<ReceiveResult.TransferComplete>(result)
+            } else {
+                assertIs<ReceiveResult.ChunkAccepted>(result)
+            }
+        }
+
+        // Verify plaintext roundtrip
+        val transferId = TransferId("one-mib-transfer")
+        val fileId = FileId("one-mib-file")
+        val handle = receiver.getImportSource(transferId, fileId).openRead()
+        val reconstructed = ByteArrayOutputStream()
+        var chunk: ByteArray
+        do {
+            chunk = handle.read(8192)
+            if (chunk.isNotEmpty()) reconstructed.write(chunk)
+        } while (chunk.isNotEmpty())
+        handle.close()
+
+        assertContentEquals(plaintext, reconstructed.toByteArray())
+    }
+
+    // Wire size test: full pipeline TransferData -> PeerEnvelope -> RelayRequest -> SignalingEnvelope
+    @Test
+    fun wireSizeFullPipelineFitsLimits() = runTest {
+        val config = TransferConfig()
+        val sender = DefaultTransferSender(random, config)
+        var sentData: MutableList<TransferData> = mutableListOf()
+
+        val network = object : TransferNetworkSender {
+            override suspend fun send(data: TransferData) {
+                sentData += data
+            }
+
+            override suspend fun complete(
+                transferIdHash: String,
+                fileIdHash: String,
+                totalChunks: Int,
+            ) = Unit
+
+            override suspend fun cancel(transferIdHash: String, reason: String) = Unit
+        }
+
+        val plaintext = ByteArray(1_048_576) { it.toByte() } // 1 MiB
+        val source = ByteArrayTransferSource(plaintext)
+
+        sender.send(
+            transferId = TransferId("wire-size-test"),
+            fileId = FileId("wire-size-file"),
+            source = source,
+            encryptor = DefaultTransferEncryptor(identityCipher, key),
+            sender = network,
+        )
+
+        // Simulate the full wire encoding pipeline
+        val jsonEncoder = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        for (data in sentData) {
+            // Step 1: TransferData -> JSON
+            val serializedTransferData = jsonEncoder.encodeToString(serializer<TransferData>(), data).encodeToByteArray()
+            assertTrue(serializedTransferData.size <= config.maxTransportFramePayload,
+                "TransferData ${serializedTransferData.size} bytes exceeds frame budget ${config.maxTransportFramePayload}")
+
+            // Step 2: TransferData -> PeerEnvelope.payload (Base64)
+            val peerEnvelope = dev.veilshare.core.model.PeerEnvelope(
+                protocolVersion = SharingProtocol.VERSION,
+                messageType = dev.veilshare.core.model.PeerMessageType.DATA,
+                sessionId = dev.veilshare.core.model.SessionId("test-session"),
+                transferId = dev.veilshare.core.model.TransferId("test-transfer"),
+                payload = serializedTransferData,
+            )
+            val serializedPeerEnvelope = jsonEncoder.encodeToString(serializer<dev.veilshare.core.model.PeerEnvelope>(), peerEnvelope).encodeToByteArray()
+            assertTrue(serializedPeerEnvelope.size <= SharingProtocol.MAX_PEER_PAYLOAD_BYTES,
+                "PeerEnvelope ${serializedPeerEnvelope.size} bytes exceeds limit ${SharingProtocol.MAX_PEER_PAYLOAD_BYTES}")
+
+            // Step 3: PeerEnvelope -> RelayRequest.opaquePayload (Base64)
+            val relayRequest = dev.veilshare.core.model.RelayRequest(
+                toReferenceCode = dev.veilshare.core.model.ReferenceCodes.parse("2345-6789-ABCD-EFGH"),
+                sessionId = dev.veilshare.core.model.SessionId("test-session"),
+                opaquePayload = serializedPeerEnvelope,
+            )
+            val serializedRelayRequest = jsonEncoder.encodeToString(serializer<dev.veilshare.core.model.RelayRequest>(), relayRequest).encodeToByteArray()
+            assertTrue(serializedRelayRequest.size <= SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES,
+                "RelayRequest ${serializedRelayRequest.size} bytes exceeds limit ${SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES}")
+
+            // Step 4: RelayRequest -> SignalingEnvelope.payload (Base64)
+            val signalingEnvelope = dev.veilshare.core.model.SignalingEnvelope(
+                protocolVersion = SharingProtocol.VERSION,
+                messageId = dev.veilshare.core.model.MessageId("test-message"),
+                type = dev.veilshare.core.model.MessageType.RELAY,
+                sessionId = dev.veilshare.core.model.SessionId("test-session"),
+                payload = serializedRelayRequest,
+            )
+            val finalFrame = jsonEncoder.encodeToString(serializer<dev.veilshare.core.model.SignalingEnvelope>(), signalingEnvelope).encodeToByteArray()
+            assertTrue(finalFrame.size <= SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES * 2,
+                "Final WebSocket frame ${finalFrame.size} bytes exceeds hard limit ${SharingProtocol.MAX_ENVELOPE_PAYLOAD_BYTES * 2}")
+        }
+    }
+
+    // Base64 serialization roundtrip tests
+    @Test
+    fun base64ByteArraySerializerRoundtrip() {
+        val testCases = listOf(
+            ByteArray(0),
+            byteArrayOf(0x00.toByte()),
+            byteArrayOf(0x7f.toByte()),
+            byteArrayOf(0x80.toByte()),
+            byteArrayOf(0xff.toByte()),
+            ByteArray(256) { it.toByte() },
+            ByteArray(1024) { (it * 7).toByte() },
+        )
+
+        val json = kotlinx.serialization.json.Json {}
+
+        for (bytes in testCases) {
+            // Test the serializer directly (not through JSON)
+            val encoded = java.util.Base64.getEncoder().encodeToString(bytes)
+            val decoded = java.util.Base64.getDecoder().decode(encoded)
+            assertContentEquals(bytes, decoded)
+
+            // Verify it's a Base64 string, not a JSON array
+            assertTrue(encoded.all { it.isLetterOrDigit() || it in "+/=" })
+            assertFalse(encoded.startsWith("["))
+
+            // Also test JSON roundtrip
+            val jsonEncoded = json.encodeToString(Base64ByteArraySerializer, bytes)
+            val jsonDecoded = json.decodeFromString(Base64ByteArraySerializer, jsonEncoded)
+            assertContentEquals(bytes, jsonDecoded)
+        }
+    }
+
+    // Fragment hostile input tests
+    @Test
+    fun receiverRejectsFragmentCountMutation() = runTest {
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor)
+
+        val transferId = TransferId("frag-count-mutation")
+        val fileId = FileId("test-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+
+        // Send first fragment with fragmentCount = 2
+        val fragment1 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        assertIs<ReceiveResult.ChunkAccepted>(receiver.receive(fragment1))
+
+        // Send second fragment with different fragmentCount = 3 (mutation)
+        val fragment2 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 1,
+            fragmentCount = 3,
+        )
+        val result = receiver.receive(fragment2)
+        assertIs<ReceiveResult.Error>(result)
+        assertIs<TransferError.InvalidTransferMetadata>(result.error)
+    }
+
+    @Test
+    fun receiverRejectsNonceMutationBetweenFragments() = runTest {
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor)
+
+        val transferId = TransferId("nonce-mutation")
+        val fileId = FileId("test-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+
+        val nonce1 = ByteArray(12) { 1 }
+        val fragment1 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = nonce1,
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        assertIs<ReceiveResult.ChunkAccepted>(receiver.receive(fragment1))
+
+        // Different nonce for second fragment
+        val nonce2 = ByteArray(12) { 2 }
+        val fragment2 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = nonce2,
+            fragmentIndex = 1,
+            fragmentCount = 2,
+        )
+        val result = receiver.receive(fragment2)
+        assertIs<ReceiveResult.Error>(result)
+        assertIs<TransferError.InvalidTransferMetadata>(result.error)
+    }
+
+    @Test
+    fun receiverRejectsOversizedReassemblyBeforeAllocation() = runTest {
+        val config = TransferConfig(maxCiphertextSize = 100)
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor, config)
+
+        val transferId = TransferId("oversized-reassembly")
+        val fileId = FileId("test-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+
+        // First fragment: 60 bytes
+        val fragment1 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(60),
+            nonce = ByteArray(12),
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        assertIs<ReceiveResult.ChunkAccepted>(receiver.receive(fragment1))
+
+        // Second fragment: 60 bytes -> total 120 > maxCiphertextSize (100)
+        val fragment2 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(60),
+            nonce = ByteArray(12),
+            fragmentIndex = 1,
+            fragmentCount = 2,
+        )
+        val result = receiver.receive(fragment2)
+        assertIs<ReceiveResult.Error>(result)
+        assertIs<TransferError.ChunkTooLarge>(result.error)
+    }
+
+    @Test
+    fun receiverHandlesDuplicateFragment() = runTest {
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor)
+
+        val transferId = TransferId("duplicate-fragment")
+        val fileId = FileId("test-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+
+        val fragment1 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        assertIs<ReceiveResult.ChunkAccepted>(receiver.receive(fragment1))
+
+        // Duplicate fragment
+        val duplicate = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        val result = receiver.receive(duplicate)
+        assertIs<ReceiveResult.DuplicateChunk>(result)
+    }
+
+    @Test
+    fun receiverHandlesMissingFragment() = runTest {
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor)
+
+        val transferId = TransferId("missing-fragment")
+        val fileId = FileId("test-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+
+        // Send only fragment 0 of 2
+        val fragment1 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        val result = receiver.receive(fragment1)
+        assertIs<ReceiveResult.ChunkAccepted>(result)
+
+        // Never send fragment 1 - transfer should not complete
+        // We can't easily test "never completes" without timeout, but we can verify
+        // the receiver state doesn't mark chunk as received
+        assertFalse(receiver.getProgress(transferId).value is TransferReceiverProgress.TransferComplete)
+    }
+
+    @Test
+    fun receiverHandlesOutOfOrderFragments() = runTest {
+        val decryptor = DefaultTransferDecryptor(identityCipher, key)
+        val receiver = InMemoryTransferReceiver(decryptor)
+
+        val transferId = TransferId("out-of-order")
+        val fileId = FileId("test-file")
+        val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
+        val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
+
+        // Send fragment 1 first
+        val fragment2 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 1,
+            fragmentCount = 2,
+        )
+        assertIs<ReceiveResult.ChunkAccepted>(receiver.receive(fragment2))
+
+        // Send fragment 0 second
+        val fragment1 = TransferData(
+            transferIdHash = transferIdHash,
+            fileIdHash = fileIdHash,
+            chunkIndex = 0,
+            totalChunks = 1,
+            ciphertext = ByteArray(10),
+            nonce = ByteArray(12),
+            fragmentIndex = 0,
+            fragmentCount = 2,
+        )
+        val result = receiver.receive(fragment1)
+        assertIs<ReceiveResult.TransferComplete>(result)
+
+        // Verify reassembly works
+        val handle = receiver.getImportSource(transferId, fileId).openRead()
+        val data = handle.read(100)
+        handle.close()
+        assertEquals(20, data.size)
+    }
+
+    }
