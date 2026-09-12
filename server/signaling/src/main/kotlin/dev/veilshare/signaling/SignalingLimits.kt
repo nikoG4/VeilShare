@@ -10,6 +10,11 @@ data class SignalingLimits(
     val maxLookupsPerWindow: Int = 120,
     val sessionCreateWindowMillis: Long = 60 * 1000,
     val maxSessionCreatesPerWindow: Int = 60,
+    // RELAY is the data plane for Sharing V1. Keep it independent from session creation:
+    // a single 1 MiB crypto chunk is intentionally fragmented into many bounded frames.
+    val relayWindowMillis: Long = 60 * 1000,
+    val maxRelayMessagesPerWindow: Int = 8_192,
+    val maxRelayPayloadBytesPerWindow: Long = 128L * 1024L * 1024L,
 ) {
     init {
         require(presenceTtlMillis > 0)
@@ -19,6 +24,9 @@ data class SignalingLimits(
         require(maxPendingSessions > 0)
         require(lookupWindowMillis > 0 && maxLookupsPerWindow > 0)
         require(sessionCreateWindowMillis > 0 && maxSessionCreatesPerWindow > 0)
+        require(relayWindowMillis > 0)
+        require(maxRelayMessagesPerWindow > 0)
+        require(maxRelayPayloadBytesPerWindow > 0)
     }
 }
 
