@@ -1,13 +1,14 @@
 package dev.veilshare.core.crypto
 
-import dev.veilshare.core.model.SharingIdentityId
 import dev.veilshare.core.model.SessionId
-import dev.veilshare.core.model.FileId
+import dev.veilshare.core.model.SharingIdentityId
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class HandshakeTest {
@@ -16,173 +17,327 @@ class HandshakeTest {
     private val keyDeriver = JvmHkdfSha256KeyDeriver()
     private val handshakeProtocol = JvmHandshakeProtocol()
 
-    @Test fun sessionHelloRoundTrip() = runTest {
+    @Test
+    fun sessionHelloRoundTrip() = runTest {
         val sharingIdentityId = SharingIdentityId("test-identity")
         val sharingKeyPair = signer.generateKeyPair()
         val sessionId = SessionId("test-session")
 
         val hello = handshakeProtocol.createSessionHello(sharingIdentityId, sharingKeyPair, sessionId, signer)
 
-        assertEquals(Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex(), hello.sharingIdentityIdHash)
-        assertEquals(Hash.sha256(sessionId.value.encodeToByteArray()).toHex(), hello.sessionIdHash)
-        assertEquals(dev.veilshare.core.model.SharingProtocol.VERSION, hello.protocolVersion)
-
+        assertEquals(identityHash(sharingIdentityId), hello.sharingIdentityIdHash)
+        assertEquals(sessionHash(sessionId), hello.sessionIdHash)
         handshakeProtocol.verifySessionHello(
-            hello,
-            Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex(),
-            Hash.sha256(sessionId.value.encodeToByteArray()).toHex(),
-            sharingKeyPair.publicKey,
-            signer,
+            hello = hello,
+            expectedSharingIdentityIdHash = identityHash(sharingIdentityId),
+            expectedSessionIdHash = sessionHash(sessionId),
+            expectedSenderPublicKey = sharingKeyPair.publicKey,
+            signer = signer,
         )
     }
 
-    @Test fun sessionHelloInvalidSignatureFails() = runTest {
+    @Test
+    fun sessionHelloRejectsSignatureAndPeerKeySubstitution() = runTest {
         val sharingIdentityId = SharingIdentityId("test-identity")
         val sharingKeyPair = signer.generateKeyPair()
+        val attacker = signer.generateKeyPair()
         val sessionId = SessionId("test-session")
-
         val hello = handshakeProtocol.createSessionHello(sharingIdentityId, sharingKeyPair, sessionId, signer)
-
-        val tamperedHello = hello.copy(signature = "invalid".padEnd(88, 'A'))
 
         assertFailsWith<IllegalArgumentException> {
             handshakeProtocol.verifySessionHello(
-                tamperedHello,
-                Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex(),
-                Hash.sha256(sessionId.value.encodeToByteArray()).toHex(),
+                hello.copy(signature = "invalid".padEnd(88, 'A')),
+                identityHash(sharingIdentityId),
+                sessionHash(sessionId),
                 sharingKeyPair.publicKey,
+                signer,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            handshakeProtocol.verifySessionHello(
+                hello,
+                identityHash(sharingIdentityId),
+                sessionHash(sessionId),
+                attacker.publicKey,
                 signer,
             )
         }
     }
 
-    @Test fun sessionConfirmRoundTrip() = runTest {
-        val sharingIdentityId = SharingIdentityId("test-identity")
-        val sharingKeyPair = signer.generateKeyPair()
+    @Test
+    fun sessionConfirmRoundTripAndEphemeralMutationFails() = runTest {
+        val receiverIdentityId = SharingIdentityId("receiver-identity")
+        val receiverIdentityKeys = signer.generateKeyPair()
         val sessionId = SessionId("test-session")
-        val receiverEphemeralKeyPair = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
 
         val confirm = handshakeProtocol.createSessionConfirm(
-            sharingIdentityId, sharingKeyPair, sessionId, receiverEphemeralKeyPair, signer
-        )
-
-        assertEquals(Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex(), confirm.sharingIdentityIdHash)
-        assertEquals(Hash.sha256(sessionId.value.encodeToByteArray()).toHex(), confirm.sessionIdHash)
-        assertEquals(receiverEphemeralKeyPair.publicKey.bytes.toBase64(), confirm.receiverEphemeralPublicKey)
-
-        handshakeProtocol.verifySessionConfirm(
-            confirm,
-            Hash.sha256(sharingIdentityId.value.encodeToByteArray()).toHex(),
-            Hash.sha256(sessionId.value.encodeToByteArray()).toHex(),
-            receiverEphemeralKeyPair.publicKey,
-            sharingKeyPair.publicKey,
+            receiverIdentityId,
+            receiverIdentityKeys,
+            sessionId,
+            receiverEphemeral,
             signer,
         )
+
+        handshakeProtocol.verifySessionConfirm(
+            confirm = confirm,
+            expectedSharingIdentityIdHash = identityHash(receiverIdentityId),
+            expectedSessionIdHash = sessionHash(sessionId),
+            expectedReceiverEphemeralPublicKey = receiverEphemeral.publicKey,
+            expectedReceiverIdentityPublicKey = receiverIdentityKeys.publicKey,
+            signer = signer,
+        )
+
+        val attackerEphemeral = keyAgreement.generateKeyPair()
+        assertFailsWith<IllegalArgumentException> {
+            handshakeProtocol.verifySessionConfirm(
+                confirm.copy(receiverEphemeralPublicKey = attackerEphemeral.publicKey.bytes.toBase64()),
+                identityHash(receiverIdentityId),
+                sessionHash(sessionId),
+                receiverEphemeral.publicKey,
+                receiverIdentityKeys.publicKey,
+                signer,
+            )
+        }
     }
 
-    @Test fun sessionConfirmAckRoundTrip() = runTest {
+    @Test
+    fun sessionConfirmAckIsSignedByExpectedSenderIdentity() = runTest {
+        val senderIdentityId = SharingIdentityId("sender-identity")
+        val receiverIdentityId = SharingIdentityId("receiver-identity")
+        val senderIdentityKeys = signer.generateKeyPair()
         val sessionId = SessionId("test-session")
-        val senderEphemeralKeyPair = keyAgreement.generateKeyPair()
-        val receiverEphemeralKeyPair = keyAgreement.generateKeyPair()
-
-        val helloProtocolVersion = 1
-        val helloSenderSharingIdentityIdHash = "hello-sender-hash"
-        val helloSessionIdHash = "hello-session-hash"
-        val confirmProtocolVersion = 1
-        val confirmReceiverSharingIdentityIdHash = "confirm-receiver-hash"
-        val confirmSessionIdHash = "confirm-session-hash"
-        val confirmEphemeralPublicKeyHash = Hash.sha256(receiverEphemeralKeyPair.publicKey.bytes).toHex()
-
-        val transcript = HandshakeTranscript(
-            protocolVersion = helloProtocolVersion,
-            senderIdentityIdHash = helloSenderSharingIdentityIdHash,
-            receiverIdentityIdHash = confirmReceiverSharingIdentityIdHash,
-            sessionIdHash = helloSessionIdHash,
-            senderEphemeralPublicKey = confirmEphemeralPublicKeyHash,
-            receiverEphemeralPublicKey = confirmEphemeralPublicKeyHash,
-        )
+        val senderEphemeral = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
 
         val ack = handshakeProtocol.createSessionConfirmAck(
-            sessionId, senderEphemeralKeyPair, transcript
+            senderSharingIdentityId = senderIdentityId,
+            senderSharingKeyPair = senderIdentityKeys,
+            receiverSharingIdentityIdHash = identityHash(receiverIdentityId),
+            sessionId = sessionId,
+            senderEphemeralKeyPair = senderEphemeral,
+            receiverEphemeralPublicKey = receiverEphemeral.publicKey,
+            signer = signer,
         )
 
-        assertEquals(Hash.sha256(sessionId.value.encodeToByteArray()).toHex(), ack.sessionIdHash)
-        assertEquals(senderEphemeralKeyPair.publicKey.bytes.toBase64(), ack.senderEphemeralPublicKey)
-
-        val expectedSenderEphemeralHash = Hash.sha256(senderEphemeralKeyPair.publicKey.bytes).toHex()
-
-        val verifiedSenderEphemeralPublicKey = handshakeProtocol.verifySessionConfirmAck(
-            ack,
-            Hash.sha256(sessionId.value.encodeToByteArray()).toHex(),
-            expectedSenderEphemeralHash,
-            transcript,
+        val verified = handshakeProtocol.verifySessionConfirmAck(
+            ack = ack,
+            expectedSenderSharingIdentityIdHash = identityHash(senderIdentityId),
+            expectedReceiverSharingIdentityIdHash = identityHash(receiverIdentityId),
+            expectedSessionIdHash = sessionHash(sessionId),
+            expectedReceiverEphemeralPublicKey = receiverEphemeral.publicKey,
+            expectedSenderIdentityPublicKey = senderIdentityKeys.publicKey,
+            signer = signer,
         )
-        assertEquals(senderEphemeralKeyPair.publicKey.bytes.contentToString(), verifiedSenderEphemeralPublicKey.bytes.contentToString())
+
+        assertContentEquals(senderEphemeral.publicKey.bytes, verified.senderEphemeralPublicKey.bytes)
+        assertEquals(ack.transcriptHash, verified.transcript.computeTranscriptHash())
     }
 
-    @Test fun deriveHandshakeKeysCommutative() = runTest {
-        val senderEphemeralKeyPair = keyAgreement.generateKeyPair()
-        val receiverEphemeralKeyPair = keyAgreement.generateKeyPair()
+    @Test
+    fun forgedAckWithReplacedSenderEphemeralFailsEvenWithRecomputedTranscriptHash() = runTest {
+        val senderIdentityId = SharingIdentityId("sender-identity")
+        val receiverIdentityId = SharingIdentityId("receiver-identity")
+        val senderIdentityKeys = signer.generateKeyPair()
+        val sessionId = SessionId("test-session")
+        val senderEphemeral = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
+        val attackerEphemeral = keyAgreement.generateKeyPair()
+
+        val ack = handshakeProtocol.createSessionConfirmAck(
+            senderIdentityId,
+            senderIdentityKeys,
+            identityHash(receiverIdentityId),
+            sessionId,
+            senderEphemeral,
+            receiverEphemeral.publicKey,
+            signer,
+        )
+
+        val forgedSenderEphemeral = attackerEphemeral.publicKey.bytes.toBase64()
+        val forgedTranscript = HandshakeTranscript(
+            protocolVersion = ack.protocolVersion,
+            senderIdentityIdHash = identityHash(senderIdentityId),
+            receiverIdentityIdHash = identityHash(receiverIdentityId),
+            sessionIdHash = sessionHash(sessionId),
+            senderEphemeralPublicKey = forgedSenderEphemeral,
+            receiverEphemeralPublicKey = receiverEphemeral.publicKey.bytes.toBase64(),
+        )
+        val forgedAck = ack.copy(
+            senderEphemeralPublicKey = forgedSenderEphemeral,
+            transcriptHash = forgedTranscript.computeTranscriptHash(),
+            // Attacker cannot replace this with a valid signature from sender identity.
+            signature = ack.signature,
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            handshakeProtocol.verifySessionConfirmAck(
+                forgedAck,
+                identityHash(senderIdentityId),
+                identityHash(receiverIdentityId),
+                sessionHash(sessionId),
+                receiverEphemeral.publicKey,
+                senderIdentityKeys.publicKey,
+                signer,
+            )
+        }
+    }
+
+    @Test
+    fun ackFailsAgainstWrongTrustedSenderIdentityKey() = runTest {
+        val senderIdentityId = SharingIdentityId("sender-identity")
+        val receiverIdentityId = SharingIdentityId("receiver-identity")
+        val senderIdentityKeys = signer.generateKeyPair()
+        val wrongIdentityKeys = signer.generateKeyPair()
+        val sessionId = SessionId("test-session")
+        val senderEphemeral = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
+
+        val ack = handshakeProtocol.createSessionConfirmAck(
+            senderIdentityId,
+            senderIdentityKeys,
+            identityHash(receiverIdentityId),
+            sessionId,
+            senderEphemeral,
+            receiverEphemeral.publicKey,
+            signer,
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            handshakeProtocol.verifySessionConfirmAck(
+                ack,
+                identityHash(senderIdentityId),
+                identityHash(receiverIdentityId),
+                sessionHash(sessionId),
+                receiverEphemeral.publicKey,
+                wrongIdentityKeys.publicKey,
+                signer,
+            )
+        }
+    }
+
+    @Test
+    fun bothPeersDeriveSameTranscriptBoundDirectionalKeys() = runTest {
+        val senderEphemeral = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
+        val transcript = transcript(senderEphemeral, receiverEphemeral, "session-a")
 
         val senderKeys = handshakeProtocol.deriveHandshakeKeys(
-            senderEphemeralKeyPair.privateKey,
-            receiverEphemeralKeyPair.publicKey,
+            senderEphemeral.privateKey,
+            receiverEphemeral.publicKey,
+            transcript,
             keyAgreement,
             keyDeriver,
         )
-
         val receiverKeys = handshakeProtocol.deriveHandshakeKeys(
-            receiverEphemeralKeyPair.privateKey,
-            senderEphemeralKeyPair.publicKey,
+            receiverEphemeral.privateKey,
+            senderEphemeral.publicKey,
+            transcript,
             keyAgreement,
             keyDeriver,
         )
 
-        // ECDH is commutative: both sides should derive the same shared secret
-        // So sender's s2rKey should equal receiver's s2rKey (same salt "s2r-key-v1")
-        assertEquals(senderKeys.senderToReceiverKey.contentToString(), receiverKeys.senderToReceiverKey.contentToString())
-        assertEquals(senderKeys.receiverToSenderKey.contentToString(), receiverKeys.receiverToSenderKey.contentToString())
+        assertContentEquals(senderKeys.senderToReceiverKey, receiverKeys.senderToReceiverKey)
+        assertContentEquals(senderKeys.receiverToSenderKey, receiverKeys.receiverToSenderKey)
         assertEquals(senderKeys.transcriptHash, receiverKeys.transcriptHash)
-        assertNotNull(senderKeys.senderToReceiverKey)
-        assertNotNull(senderKeys.receiverToSenderKey)
-        assertNotNull(senderKeys.transcriptHash)
+        assertFalse(senderKeys.senderToReceiverKey.contentEquals(senderKeys.receiverToSenderKey))
     }
 
-    @Test fun transcriptHashIsDeterministic() = runTest {
-        val transcript = HandshakeTranscript(
-            protocolVersion = 1,
-            senderIdentityIdHash = "hello-sender-hash",
-            receiverIdentityIdHash = "confirm-receiver-hash",
-            sessionIdHash = "hello-session-hash",
-            senderEphemeralPublicKey = "confirm-ephemeral-hash",
-            receiverEphemeralPublicKey = "ack-ephemeral-hash",
+    @Test
+    fun sameX25519SecretProducesDifferentKeysForDifferentTranscript() = runTest {
+        val senderEphemeral = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
+        val transcriptA = transcript(senderEphemeral, receiverEphemeral, "session-a")
+        val transcriptB = transcript(senderEphemeral, receiverEphemeral, "session-b")
+
+        val keysA = handshakeProtocol.deriveHandshakeKeys(
+            senderEphemeral.privateKey,
+            receiverEphemeral.publicKey,
+            transcriptA,
+            keyAgreement,
+            keyDeriver,
+        )
+        val keysB = handshakeProtocol.deriveHandshakeKeys(
+            senderEphemeral.privateKey,
+            receiverEphemeral.publicKey,
+            transcriptB,
+            keyAgreement,
+            keyDeriver,
         )
 
-        val hash1 = transcript.computeTranscriptHash()
-        val hash2 = transcript.computeTranscriptHash()
-
-        assertEquals(hash1, hash2)
+        assertFalse(keysA.senderToReceiverKey.contentEquals(keysB.senderToReceiverKey))
+        assertFalse(keysA.receiverToSenderKey.contentEquals(keysB.receiverToSenderKey))
+        assertNotEquals(keysA.transcriptHash, keysB.transcriptHash)
     }
 
-    @Test fun ed25519SignVerify() = runTest {
+    @Test
+    fun transcriptHashChangesWhenAnyBoundFieldChanges() {
+        val senderEphemeral = keyAgreement.generateKeyPair()
+        val receiverEphemeral = keyAgreement.generateKeyPair()
+        val base = transcript(senderEphemeral, receiverEphemeral, "session-a")
+        val baseHash = base.computeTranscriptHash()
+
+        assertNotEquals(baseHash, base.copy(senderIdentityIdHash = "different-sender").computeTranscriptHash())
+        assertNotEquals(baseHash, base.copy(receiverIdentityIdHash = "different-receiver").computeTranscriptHash())
+        assertNotEquals(baseHash, base.copy(sessionIdHash = "different-session").computeTranscriptHash())
+        assertNotEquals(baseHash, base.copy(senderEphemeralPublicKey = "different-ephemeral").computeTranscriptHash())
+        assertNotEquals(baseHash, base.copy(receiverEphemeralPublicKey = "different-ephemeral").computeTranscriptHash())
+    }
+
+    @Test
+    fun canonicalEncodingIsNotAmbiguousAcrossFieldBoundaries() {
+        val one = HandshakeCanonical.encode(
+            domain = "domain",
+            protocolVersion = 1,
+            fields = listOf("a|b", "c"),
+        )
+        val two = HandshakeCanonical.encode(
+            domain = "domain",
+            protocolVersion = 1,
+            fields = listOf("a", "b|c"),
+        )
+        assertFalse(one.contentEquals(two))
+    }
+
+    @Test
+    fun ed25519SignVerify() {
         val keyPair = signer.generateKeyPair()
         val message = "test message".encodeToByteArray()
         val signature = signer.sign(keyPair.privateKey, message)
-        
         assertTrue(signer.verify(keyPair.publicKey, message, signature))
-        
-        // Wrong message should fail verification
-        val wrongMessage = "wrong message".encodeToByteArray()
-        assertTrue(signer.verify(keyPair.publicKey, wrongMessage, signature).not())
+        assertFalse(signer.verify(keyPair.publicKey, "wrong message".encodeToByteArray(), signature))
     }
 
-    @Test fun x25519KeyAgreementCommutative() = runTest {
+    @Test
+    fun x25519KeyAgreementCommutative() {
         val keyPairA = keyAgreement.generateKeyPair()
         val keyPairB = keyAgreement.generateKeyPair()
-
         val sharedA = keyAgreement.deriveSharedSecret(keyPairA.privateKey, keyPairB.publicKey)
         val sharedB = keyAgreement.deriveSharedSecret(keyPairB.privateKey, keyPairA.publicKey)
-
-        assertEquals(sharedA.copy().contentToString(), sharedB.copy().contentToString())
+        try {
+            assertContentEquals(sharedA.copy(), sharedB.copy())
+        } finally {
+            sharedA.close()
+            sharedB.close()
+        }
     }
+
+    private fun transcript(
+        senderEphemeral: X25519KeyPair,
+        receiverEphemeral: X25519KeyPair,
+        session: String,
+    ) = HandshakeTranscript(
+        protocolVersion = dev.veilshare.core.model.SharingProtocol.VERSION,
+        senderIdentityIdHash = "sender-identity-hash",
+        receiverIdentityIdHash = "receiver-identity-hash",
+        sessionIdHash = Hash.sha256(session.encodeToByteArray()).toHex(),
+        senderEphemeralPublicKey = senderEphemeral.publicKey.bytes.toBase64(),
+        receiverEphemeralPublicKey = receiverEphemeral.publicKey.bytes.toBase64(),
+    )
+
+    private fun identityHash(id: SharingIdentityId): String =
+        Hash.sha256(id.value.encodeToByteArray()).toHex()
+
+    private fun sessionHash(id: SessionId): String =
+        Hash.sha256(id.value.encodeToByteArray()).toHex()
 }
