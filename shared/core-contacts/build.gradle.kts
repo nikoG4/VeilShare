@@ -15,6 +15,7 @@ kotlin {
             implementation(project(":shared:core-model"))
             implementation(project(":shared:core-crypto"))
             implementation(project(":shared:core-identity"))
+            implementation(project(":shared:core-secure-store"))
             implementation(libs.coroutines.core)
         }
         commonTest.dependencies {
