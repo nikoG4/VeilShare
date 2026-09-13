@@ -20,7 +20,6 @@ import dev.veilshare.core.model.RandomBytesSource
 import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
-import dev.veilshare.core.model.TransferId
 import dev.veilshare.core.platform.SignalingClient
 import dev.veilshare.core.transfer.DefaultTransferSender
 import dev.veilshare.core.transfer.EstablishedSessionSide
@@ -35,7 +34,6 @@ import dev.veilshare.core.transfer.TransferSender
 import dev.veilshare.core.transfer.TransferSource
 import dev.veilshare.core.transfer.TrustedOutboundHandshakeCompleter
 import dev.veilshare.core.transfer.TrustedOutboundSessionStarter
-import dev.veilshare.core.ui_unused_marker
 import dev.veilshare.core.vault.VaultHandle
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingProgress
@@ -158,18 +156,15 @@ class DefaultSharingRuntime(
 
             val start = starter.start(contextId, referenceCode)
             val started = when (start) {
-                is OutboundSessionStartResult.NeedsVerification -> {
+                is OutboundSessionStartResult.NeedsVerification ->
                     return SharingSendResult.NeedsVerification(start.decision.candidate.fingerprint.value)
-                }
-                is OutboundSessionStartResult.KeyMismatch -> {
+                is OutboundSessionStartResult.KeyMismatch ->
                     return SharingSendResult.KeyMismatch(
                         expectedFingerprint = start.decision.contact.fingerprint.value,
                         presentedFingerprint = start.decision.presentedFingerprint.value,
                     )
-                }
-                is OutboundSessionStartResult.Unavailable -> {
+                is OutboundSessionStartResult.Unavailable ->
                     return SharingSendResult.Unavailable("El destinatario no está disponible.")
-                }
                 is OutboundSessionStartResult.Started -> start
             }
 
