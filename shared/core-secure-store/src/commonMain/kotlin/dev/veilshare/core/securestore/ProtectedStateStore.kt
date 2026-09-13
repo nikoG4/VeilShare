@@ -45,11 +45,16 @@ class ProtectedStateStore(
 
     suspend fun read(scope: SecureStateScope): ByteArray? {
         val protected = storage.read(scope.fileName()) ?: return null
-        require(protected.isNotEmpty()) { "Protected state file is empty" }
-        require(protected.size <= maxProtectedBytes) { "Protected state file exceeds size limit" }
-        return try {
-            protector.unprotect(scope, protected).also { plaintext ->
+        try {
+            require(protected.isNotEmpty()) { "Protected state file is empty" }
+            require(protected.size <= maxProtectedBytes) { "Protected state file exceeds size limit" }
+            val plaintext = protector.unprotect(scope, protected)
+            try {
                 require(plaintext.size <= maxPlaintextBytes) { "Decrypted state exceeds size limit" }
+                return plaintext
+            } catch (failure: Throwable) {
+                plaintext.fill(0)
+                throw failure
             }
         } finally {
             protected.fill(0)
