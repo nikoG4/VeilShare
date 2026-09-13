@@ -13,6 +13,7 @@ import dev.veilshare.core.model.RandomBytesSource
 import dev.veilshare.core.model.SharingIdentityId
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.jvm.JvmInline
 
 /**
  * Opaque local context identifier for one independent sharing identity.
