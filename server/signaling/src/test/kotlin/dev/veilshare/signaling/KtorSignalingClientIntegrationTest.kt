@@ -9,6 +9,7 @@ import dev.veilshare.core.model.RegisterRequest
 import dev.veilshare.core.model.RelayRequest
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SharingIdentityId
+import dev.veilshare.core.model.UnregisterRequest
 import dev.veilshare.core.platform.KtorSignalingClient
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.server.testing.testApplication
@@ -19,12 +20,14 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 
 class KtorSignalingClientIntegrationTest {
-    @Test fun twoClientsRegisterLookupAndRelayOpaquePayload() = testApplication {
+    @Test fun twoClientsRegisterLookupRelayAndUnregisterPresence() = testApplication {
         val state = SignalingServerState(clock = MutableSignalingClock())
         application { signalingModule(state) }
         val http = createClient { install(WebSockets) }
         val aliceCode = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
         val bobCode = ReferenceCodes.parse("2345-6789-ABCD-EFGJ")
+        val aliceId = SharingIdentityId("alice")
+        val bobId = SharingIdentityId("bob")
         val alice = KtorSignalingClient(http, "/v1/ws", CountingEntropy(10))
         val bob = KtorSignalingClient(http, "/v1/ws", CountingEntropy(40))
         val opaque = "opaque peer payload".encodeToByteArray()
@@ -32,18 +35,24 @@ class KtorSignalingClientIntegrationTest {
         try {
             alice.connect()
             bob.connect()
-            alice.register(RegisterRequest(SharingIdentityId("alice"), aliceCode, "alice-public-key"))
-            bob.register(RegisterRequest(SharingIdentityId("bob"), bobCode, "bob-public-key"))
+            alice.register(RegisterRequest(aliceId, aliceCode, "alice-public-key"))
+            bob.register(RegisterRequest(bobId, bobCode, "bob-public-key"))
 
-            val lookup = alice.lookup(LookupRequest(bobCode, SharingIdentityId("alice")))
+            val lookup = alice.lookup(LookupRequest(bobCode, aliceId))
             assertEquals(LookupStatus.FOUND, lookup.status)
-            assertEquals(SharingIdentityId("bob"), lookup.sharingIdentityId)
+            assertEquals(bobId, lookup.sharingIdentityId)
 
             alice.relay(RelayRequest(bobCode, SessionId("session-1"), opaque))
             val relayed = withTimeout(5_000) { bob.incoming.first() }
             assertEquals(MessageType.RELAY, relayed.type)
             assertEquals(SessionId("session-1"), relayed.sessionId)
             assertContentEquals(opaque, relayed.payload)
+
+            // Explicit revocation must take effect immediately; callers must not have to
+            // wait for connection teardown or presence TTL before rotating a route.
+            bob.unregister(UnregisterRequest(bobId))
+            val revoked = alice.lookup(LookupRequest(bobCode, aliceId))
+            assertEquals(LookupStatus.NOT_FOUND, revoked.status)
         } finally {
             alice.close()
             bob.close()
