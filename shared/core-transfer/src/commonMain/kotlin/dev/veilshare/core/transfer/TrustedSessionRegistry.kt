@@ -17,6 +17,12 @@ private object MonotonicTrustedSessionClock : TransferClock {
     override fun nowMillis(): Long = origin.elapsedNow().inWholeMilliseconds
 }
 
+sealed interface PendingAdmissionResult {
+    data object Available : PendingAdmissionResult
+    data object Duplicate : PendingAdmissionResult
+    data class CapacityExceeded(val maxPending: Int) : PendingAdmissionResult
+}
+
 sealed interface PendingRegistrationResult {
     data object Registered : PendingRegistrationResult
     data object Duplicate : PendingRegistrationResult
@@ -50,6 +56,22 @@ class TrustedSessionRegistry(
         require(maxPending > 0)
         require(maxEstablished > 0)
         require(pendingTimeoutMs > 0)
+    }
+
+    /**
+     * Cheap preflight used before an inbound responder allocates an ephemeral key or sends
+     * SESSION_CONFIRM. ManagedTrustedSessionCoordinator serializes the preflight+register
+     * sequence, so a capacity rejection has zero handshake side effects.
+     */
+    suspend fun inspectPendingAdmission(sessionId: SessionId): PendingAdmissionResult = mutex.withLock {
+        check(!closed) { "Trusted session registry is closed" }
+        sweepExpiredLocked(clock.nowMillis())
+        val key = sessionId.value
+        when {
+            pending.containsKey(key) || established.containsKey(key) -> PendingAdmissionResult.Duplicate
+            pending.size >= maxPending -> PendingAdmissionResult.CapacityExceeded(maxPending)
+            else -> PendingAdmissionResult.Available
+        }
     }
 
     suspend fun registerPending(handshake: PendingInboundHandshake): PendingRegistrationResult = mutex.withLock {
