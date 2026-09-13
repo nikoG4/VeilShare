@@ -1,0 +1,39 @@
+name: App and Sharing UI Compile
+
+on:
+  push:
+    branches:
+      - ci/android-sharing-instrumentation
+
+permissions:
+  contents: read
+
+jobs:
+  compile-app-surfaces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile shared UI and app for Desktop
+        run: ./gradlew :shared:ui-features:compileKotlinDesktop :shared:app:compileKotlinDesktop --no-daemon --stacktrace
+
+      - name: Compile Desktop application
+        run: ./gradlew :desktopApp:compileKotlin --no-daemon --stacktrace
+
+      - name: Compile shared UI and app for Android
+        run: ./gradlew :shared:ui-features:compileDebugKotlinAndroid :shared:app:compileDebugKotlinAndroid --no-daemon --stacktrace
+
+      - name: Compile Android application
+        run: ./gradlew :androidApp:compileDebugKotlin --no-daemon --stacktrace
