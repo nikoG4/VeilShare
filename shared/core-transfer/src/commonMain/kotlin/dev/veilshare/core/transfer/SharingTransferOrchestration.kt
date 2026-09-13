@@ -134,13 +134,15 @@ class OutgoingSharingTransfer(
                 OutgoingControlResult.Rejected(message.value.reason)
             }
             is DecodedPeerMessage.Cancel -> {
+                val wasSending = stateValue == OutgoingTransferState.SENDING
                 stateValue = OutgoingTransferState.CANCELLED
-                if (stateValue != OutgoingTransferState.SENDING) closeSourceBestEffort()
+                if (!wasSending) closeSourceBestEffort()
                 OutgoingControlResult.RemoteCancel(message.value.reason)
             }
             is DecodedPeerMessage.Failure -> {
+                val wasSending = stateValue == OutgoingTransferState.SENDING
                 stateValue = OutgoingTransferState.FAILED
-                if (stateValue != OutgoingTransferState.SENDING) closeSourceBestEffort()
+                if (!wasSending) closeSourceBestEffort()
                 OutgoingControlResult.RemoteFailure(message.value)
             }
             else -> OutgoingControlResult.Ignored(message)
