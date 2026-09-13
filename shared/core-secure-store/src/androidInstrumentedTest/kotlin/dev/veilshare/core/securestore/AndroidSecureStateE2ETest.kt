@@ -13,7 +13,7 @@ import kotlin.test.fail
 
 class AndroidSecureStateE2ETest {
     @Test
-    fun `Keystore state roundtrip rejects swap and tamper without plaintext on disk`() = runTest {
+    fun keystoreStateRoundtripRejectsSwapAndTamperWithoutPlaintextOnDisk() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val suffix = System.nanoTime().toString()
         val directoryName = "veilshare-secure-state-test-$suffix"
