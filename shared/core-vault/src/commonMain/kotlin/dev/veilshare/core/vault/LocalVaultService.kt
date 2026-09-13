@@ -5,11 +5,21 @@ import dev.veilshare.core.crypto.FileKey
 import dev.veilshare.core.crypto.KeyDeriver
 import dev.veilshare.core.crypto.SecureRandom
 import dev.veilshare.core.crypto.SensitiveChars
+import dev.veilshare.core.model.LocalPersonaId
 
 enum class LocalStorageState { EMPTY, READY, INCOMPLETE, CORRUPT }
 
 sealed interface LocalUnlockResult {
-    data class Ready(val vault: VaultHandle) : LocalUnlockResult
+    /**
+     * [personaId] is local-only metadata for binding an unlocked vault persona to a
+     * separately random sharing context. Production vault services populate it; nullable
+     * default preserves source compatibility for test/fake LocalVaultService instances.
+     */
+    data class Ready(
+        val vault: VaultHandle,
+        val personaId: LocalPersonaId? = null,
+    ) : LocalUnlockResult
+
     data object InvalidCredential : LocalUnlockResult
     data object Corrupt : LocalUnlockResult
 }
