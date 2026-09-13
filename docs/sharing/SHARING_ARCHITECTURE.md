@@ -1,318 +1,405 @@
-# Sharing / Signaling Architecture
+# VeilShare Sharing Architecture V1
 
-Date: 2026-08-15
-Author: VeilShare Agent
-Version: V1 CORRECTED
+Status: implemented baseline + identity/trust layer under validation
 
-## Repository State
+## Scope
 
-- Branch: master
-- Commit: 02e1d70 "feat: polish local vault release readiness"
-- Working tree: untracked docs/agent/, docs/sharing/
+Sharing V1 provides:
 
-## Design Corrections (V1 Foundation)
+- independent local sharing identities per context;
+- random rotatable ReferenceCodes;
+- in-memory signaling presence/lookup/relay;
+- Ed25519-authenticated handshake;
+- fresh X25519 session ephemerals;
+- transcript-bound HKDF key derivation;
+- encrypted post-handshake peer envelopes;
+- ChaCha20-Poly1305 DATA chunks;
+- bounded transport fragmentation;
+- transfer lifecycle limits and hostile-input validation;
+- crash-safe import into the existing encrypted vault;
+- verified-contact pinning and trusted session bootstrap.
 
-### Correction 1: Independent Sharing Identities
+V1 does not provide:
 
-**Previous Design Flaw:**
-Same public identity for both REAL and DECOY vaults on same device.
+- WebRTC/STUN/TURN;
+- multi-device sync;
+- group sharing;
+- byte-range resume;
+- cloud file storage;
+- iOS production crypto yet;
+- persistent identity/contact stores yet.
 
-**Problem:**
-Allows correlation of activity between contexts, leaking vault relationships.
+## Trust boundaries
 
-**Corrected Design:**
-- Each sharing context has independent `SharingIdentityId`
-- No common network-visible installation ID
-- No hardware fingerprinting for sharing identity
-- Server cannot correlate sessions across contexts
+### Signaling server
 
-```
-Context A (vault A):
-  SharingIdentityId → ephemeral identity
-  ReferenceCode → random token
+The server is a blind routing service, not a trust authority.
 
-Context B (vault B):
-  SharingIdentityId → ephemeral identity
-  ReferenceCode → random token
-```
+It may see:
 
-### Correction 2: Random Reference Codes
+- active `ReferenceCode` registrations;
+- public sharing identity material used for registration/lookup;
+- SessionId used for routing;
+- public pre-key handshake envelopes;
+- current handshake reply ReferenceCode;
+- frame lengths, timing and connection metadata.
 
-**Previous Design Flaw:**
-ReferenceCode derived from public identity via hash.
+After session keys are established, it must not see:
 
-**Problem:**
-Code must be static, cannot be rotated/revoked without identity change.
+- TransferId;
+- FileId;
+- PeerMessageType;
+- filename;
+- MIME type;
+- exact declared file size;
+- DATA metadata;
+- plaintext file content;
+- vault metadata/keys;
+- REAL/DECOY labels;
+- contact aliases.
 
-**Corrected Design:**
-- ReferenceCode = random high-entropy routing token
-- >= 80 bits real entropy
-- Human-readable Base32 with checksum
-- Rotatable and revocable
-- Not derived from identity key
+Post-handshake `PeerEnvelope` is serialized and then protected by the session ENVELOPE AEAD key before entering `RelayRequest`.
 
-### Correction 3: WebSocket Relay V1
+### LOOKUP
 
-**Previous Design Flaw:**
-V1 proposed Android=WebRTC, Desktop=local socket.
+`LOOKUP` returns reachability information only:
 
-**Corrected Design:**
-- V1 uses Ktor WebSocket relay for both platforms
-- Server receives opaque frames, routes, forwards
-- No platform-specific transport in V1
-- V2 may evaluate WebRTC, P2P, STUN, TURN
+- `SharingIdentityId`;
+- Ed25519 public key.
 
-### Correction 4: Encrypted Metadata
+Both fields are untrusted until compared with local pinned contact state.
 
-**Previous Design Flaw:**
-Server needed to see filename, MIME, digest.
+A compromised signaling server must not be able to replace a contact key silently.
 
-**Corrected Design:**
-- All metadata inside E2E channel
-- Server sees only: timing, lookup IDs, routing IDs
-- Server never parses payload
+## Local identity architecture
 
-### Correction 5: No Chunk ACK in V1
+Each local sharing context owns an independent:
 
-**Previous Design Flaw:**
-V1 proposed per-chunk ACKs.
-
-**Corrected Design:**
-- WebSocket/TCP guarantees order (no ACKs)
-- Full restart on disconnect
-- Idempotent commit via TransferId
-- Resume from byte offset deferred to V2
-
-### Correction 6: Handshake Contract
-
-**Previous Design Flaw:**
-Vague "signature verification" for MITM.
-
-**Corrected Design:**
-- Separate long-term identity (Ed25519)
-- Fresh ephemeral keys per session (X25519)
-- Transcript binding with HKDF-SHA-256
-- AEAD with distinct keys
-- No reuse of vault keys (VMK, KEK, FileKey)
-
-## Existing Signaling Server Audit
-
-### Current Implementation
-
-The `server/signaling` module is a placeholder reserved for Phase 5.
-
-File: `server/signaling/src/main/kotlin/dev/veilshare/signaling/Main.kt`
-
-```kotlin
-package dev.veilshare.signaling
-
-/** Phase 0 deliberately has no network endpoint: the server module is reserved for Phase 5. */
-fun main() = println("VeilShare signaling server is not implemented in Foundation.")
+```text
+SharingContextId (local only)
+  -> SharingIdentityId
+  -> Ed25519 identity keypair
+  -> ReferenceCode (separate random routing token)
 ```
 
-### Build Configuration
+None of these are derived from:
 
-File: `server/signaling/build.gradle.kts`
+- VaultId;
+- VMK;
+- KEK;
+- FileKey;
+- blob namespace;
+- device/account/hardware identifiers.
 
-```kotlin
-plugins { alias(libs.plugins.kotlin.jvm); application }
-kotlin { jvmToolchain(17) }
-application { mainClass.set("dev.veilshare.signaling.MainKt") }
+Identity and ReferenceCode lifecycles are intentionally independent.
+
+### SharingIdentityManager
+
+Responsibilities:
+
+- create/load one Ed25519 identity per context;
+- rotate identity explicitly;
+- expose public identity;
+- lend a short-lived private key copy through `SharingIdentityHandle.withKeyPair()`;
+- best-effort zeroization of temporary private material.
+
+Persistent identity storage remains pending. Private seeds must never be persisted as unprotected plaintext.
+
+### SharingPresenceManager
+
+Responsibilities:
+
+- create/load one random ReferenceCode per context;
+- keep it stable until rotation/deletion;
+- rotate routing without rotating identity.
+
+## Trusted contacts
+
+A verified contact pins:
+
+```text
+ContactId
+alias (local only)
+SharingIdentityId
+Ed25519 public key
+SHA-256 public-key fingerprint
+verification method
+optional last-known ReferenceCode
 ```
 
-### Component Inventory
+Supported explicit verification methods:
 
-| Component | Status V1 | Notes |
-|-----------|--------|-------|
-| Main entry point | Placeholder | No network in V1 |
-| Ktor application | Reserved | Created in Phase 2 |
-| WebSocket endpoint | Reserved | Created in Phase 2 |
-| Presence registry | In-memory (Phase 1) | Ephemeral, TTL-based |
-| Session registry | In-memory (Phase 1) | Stateless routing |
-| TURN credentials | Reserved | Not in V1 |
-| Rate limiting | Basic (Phase 1) | Lookup/session limits |
-| HTTP health endpoint | Reserved | For monitoring |
+- manual fingerprint;
+- QR code;
+- existing authenticated session.
 
-### Existing Design Documentation (Not Implemented)
+There is no silent TOFU in the core trust manager.
 
-- `docs/network/03-signaling-server.md` - Server design
-- `docs/network/05-transfer-protocol.md` - Transfer protocol (conceptual)
-- `docs/network/02-reference-code-qr.md` - Identity/coding scheme (updated)
-- `docs/network/09-metadata-privacy.md` - Privacy boundaries (updated)
-- `docs/network/07-nat-stun-turn.md` - NAT traversal (V2)
-- `docs/server/protocol-websocket.md` - WebSocket message format (updated)
-- `docs/server/ktor-api.md` - API routes and auth (reserved)
-- `docs/server/abuse-rate-limits.md` - Abuse prevention (basic in V1)
+### Trust decisions
 
-### Missing Infrastructure V1
+`TrustedContactManager.evaluate()` produces:
 
-- No Gradle dependencies for Ktor declared
-- No Kotlin P2P library bindings
-- No platform-specific transport adapters
-- No identity/signing key infrastructure (uses separate keys)
+- `Trusted` — identity and key exactly match a local pin;
+- `NeedsVerification(NEW_PEER)` — unknown identity;
+- `NeedsVerification(IDENTITY_CHANGED_FOR_ROUTING_CODE)` — known route now presents another identity;
+- `KeyMismatch` — same pinned identity now presents another key.
 
-## Sharing V1 Scope
+Pinned keys are never auto-replaced.
 
-### In Scope for V1
+## Signaling architecture
 
-1. **WebSocket relay only**
-   - Single sender → single receiver
-   - Server relays opaque frames
-   - In-memory state only
+The implemented signaling server maintains ephemeral presence and WebSocket routing.
 
-2. **Signaling server**
-   - Challenge-response authentication
-   - Reference code lookup (random token)
-   - Forward messages only
+Responsibilities:
 
-3. **Transfer**
-   - Encrypted stream chunks
-   - Full restart on disconnect (no byte-range resume)
-   - ACK not required per chunk
+- REGISTER;
+- UNREGISTER server handler;
+- LOOKUP by ReferenceCode;
+- RELAY opaque payloads;
+- PING;
+- connection/presence cleanup;
+- rate limits including an independent RELAY message+byte budget.
 
-4. **Identity**
-   - Independent sharing identity per context
-   - Random reference code
-   - Basic fingerprint verification
+Current client gap: `SignalingClient` does not yet expose `unregister()` although the server supports it. Immediate route revocation through the client is therefore a follow-up; TTL/connection teardown still removes presence.
 
-### Out of Scope for V1
+## Trusted outbound session bootstrap
 
-1. Multi-device sync
-2. Group transfers
-3. Cloud library
-4. Social graph
-5. Remote thumbnails/previews
-6. Infinite history
-7. Complex contact management
-8. WebRTC
-9. STUN/TURN
-10. Byte-range resume
-11. Production handshake crypto
+Supported flow:
 
-### Module Proposal (Phased)
-
-| Phase | Module | Justification |
-|-------|--------|-------------|
-| V1 | `:shared:core-model` | DTOs, message types |
-| V1 | `:shared:core-identity` | SharingIdentity, ReferenceCode |
-| V1 | `:shared:core-transfer` | State machine |
-| V1 | `:shared:core-platform` | Transport contract (reserved) |
-| V1 | `:server:signaling` | In-memory presence server |
-| V2 | `:shared:core-crypto` | Session key derivation |
-| V2 | P2P library integration | WebRTC evaluation |
-
-### Dependency Rules (Existing)
-
-From `docs/architecture/05-dependency-rules.md`:
-
-1. No new cryptographic dependencies without ADR
-2. `core-model` → no UI, filesystem, network
-3. `core-crypto` → no UI dependencies
-4. `core-transfer` → depends on `core-crypto`
-5. `core-contacts` → depends on `core-identity`
-6. `shared:app` → depends on all contracts
-7. Ktor client only for signaling
-8. No "encrypted shared preferences" for files
-
-## Security Invariants (Preserved)
-
-- **Authenticated catalog = logical source of truth**
-- **Corruption ≠ cleanup authorization**
-- **REAL/DECOY isolation maintained**
-- **No plaintext keys in logs**
-- **No filenames in signaling**
-- **FileKey/VaultKey never shared**
-- **Independent sharing identities**
-- **Random rotatable reference codes**
-
-## Signaling Server Responsibilities
-
-1. Challenge-response authentication
-2. Presence registration/unregistration
-3. Lookup by reference code
-4. Forward signals between authenticated peers
-5. Rate limiting
-6. TURN credential issuance (reserved)
-
-**Server never learns:**
-- Plaintext file contents
-- File names
-- FileKeys/VaultKeys
-- Vault type
-- REAL/DECOY labels
-- Contact aliases
-- File keys or digest
-
-## Client Responsibilities
-
-1. `PeerTransport` - Platform-specific (reserved)
-2. `SignalingClient` - Ktor HTTP client for signaling (reserved)
-3. `SecurePeerSession` - E2E session management (reserved)
-4. `ReferenceCodeResolver` - Lookup and verification (Phase 1)
-
-## Transfer Import Integration
-
-The receiver must use existing import pipeline:
-
-```
-Decrypted network stream
-  ↓
-ImportSource adapter
-  ↓
-ImportCoordinator (shared:core-vault)
-  ↓
-Blob store write
-  ↓
-Catalog commit
-  ↓
-Durable (FileChannel.force + AtomicMove)
+```text
+local context
+  -> SharingIdentityManager
+  -> SharingPresenceManager
+  -> signaling LOOKUP(peer ReferenceCode)
+  -> LookupTrustResolver
+  -> TrustedContactManager
 ```
 
-No bypass allowed. All transferred files must go through existing `ImportSource` interface.
+Only `Trusted` may continue:
 
-## Server State
+```text
+new SessionId
+  -> signed SESSION_HELLO
+  -> RELAY
+```
 
-**V1: In-memory only**
+Unknown peer, key mismatch, unavailable lookup or malformed key emits no HELLO RELAY.
 
-- `Map<ConnectionId, PresenceInfo>` for connection tracking
-- `Map<ReferenceCode, ConnectionId>` for lookup
-- `Map<SessionId, TransferSession>` for active transfers
-- TTL-based cleanup (30s-5m configurable)
-- No database required
+## Trusted inbound bootstrap
 
-**Future (Phase V2):**
-- Redis pub/sub for multi-instance presence
-- No file storage in server
+The relay does not authenticate who sent a RELAY. An inbound HELLO is therefore checked against local contact pins.
 
-## Client Responsibilities Summary
+```text
+SESSION_HELLO.sharingIdentityIdHash
+  -> findPinnedByIdentityHash()
+  -> pinned Ed25519 public key
+  -> verify identity hash + SessionId hash + Ed25519 signature
+```
 
-Android/Desktop clients implement (V2):
+The public key carried by HELLO never serves as its own trust anchor.
 
-1. `PeerTransport` - Platform-specific (WebRTC, local socket, etc.)
-2. `SignalingClient` - Ktor HTTP client for signaling server
-3. `SecurePeerSession` - E2E session management
-4. `ReferenceCodeResolver` - Lookup and verification
+Unknown identity hashes remain untrusted and require a separate verification flow.
 
-## Signaling Server Responsibilities Summary
+## Handshake reply routing
 
-1. Challenge-response authentication
-2. Presence registration/unregistration
-3. Lookup by reference code
-4. Forward signals between authenticated peers
-5. Rate limiting
-6. TURN credential issuance (if relay needed, reserved)
+The server forwards the opaque handshake payload and SessionId but does not add authenticated sender routing metadata.
 
-## Client Responsibilities (No Server Knowledge)
+`HandshakePeerEnvelope` therefore carries optional `replyReferenceCode`.
 
-Server **never** learns:
+Properties:
 
-- Plaintext file contents
-- File names
-- FileKeys/VaultKeys
-- Vault type
-- REAL/DECOY labels
-- Contact aliases (only full identity/code)
+- routing only;
+- public pre-key metadata;
+- no TransferId/file metadata;
+- not a trust assertion;
+- never auto-updates a contact pin/route;
+- allows response to a peer that recently rotated its ReferenceCode.
 
----
+Tampering with it can redirect/drop the next handshake message (DoS) but cannot forge Ed25519 signatures or derive session keys.
 
-**Next Action:** Create HANDSHAKE_CONTRACT.md, then implement Phase 1 DTOs.
+## Handshake sequence
+
+### 1. HELLO
+
+Sender sends signed:
+
+```text
+SESSION_HELLO
+  sender identity hash
+  sender public identity key
+  SessionId hash
+  protocol version
+  Ed25519 signature
+```
+
+Receiver verifies using the locally pinned sender key.
+
+### 2. CONFIRM
+
+Receiver creates fresh X25519 keypair and sends signed:
+
+```text
+SESSION_CONFIRM
+  receiver identity hash
+  receiver public identity key
+  SessionId hash
+  receiver ephemeral X25519 public key
+  Ed25519 signature
+```
+
+New orchestration uses `verifySessionConfirmFromPinnedIdentity()`.
+
+The receiver ephemeral is accepted only after verification under the pinned receiver Ed25519 identity. The older API requiring an expected ephemeral in advance is legacy compatibility only and must not be used for new network messages.
+
+### 3. CONFIRM_ACK
+
+Sender creates fresh X25519 keypair and sends signed:
+
+```text
+SESSION_CONFIRM_ACK
+  sender identity hash
+  SessionId hash
+  sender ephemeral X25519 public key
+  complete transcript hash
+  Ed25519 signature
+```
+
+Receiver validates the sender against its pinned identity and reconstructs the transcript.
+
+### 4. Key derivation
+
+Both peers perform X25519 and derive four transcript-bound HKDF keys:
+
+```text
+S2R DATA
+R2S DATA
+S2R ENVELOPE
+R2S ENVELOPE
+```
+
+DATA and outer-envelope crypto never reuse the same key.
+
+Ephemeral private material is single-session and closed after derivation/abort.
+
+`EstablishedPeerSession.close()` best-effort zeroizes all four session key arrays.
+
+## Post-handshake peer channel
+
+All control/data messages after the handshake are typed `PeerEnvelope`s.
+
+Before signaling relay:
+
+```text
+PeerEnvelope
+  -> serialize
+  -> ChaCha20-Poly1305(session ENVELOPE key)
+  -> SecurePeerEnvelope
+  -> RelayRequest
+```
+
+The AEAD AAD binds:
+
+- protocol version;
+- SessionId;
+- traffic direction.
+
+Direction-specific ENVELOPE keys prevent reflection/reuse across directions.
+
+## Transfer data path
+
+DATA additionally has its own chunk AEAD using the direction-specific DATA key.
+
+DATA AAD binds:
+
+- protocol version;
+- direction/domain;
+- transfer hash;
+- file hash;
+- chunk index;
+- total chunk count.
+
+A 1 MiB crypto chunk may be fragmented into bounded transport frames after encryption.
+Transport fragmentation does not change DATA AEAD semantics.
+
+Current transport bounds include:
+
+- serialized TransferData budget: 16 KiB;
+- max 128 fragments per crypto chunk;
+- relay envelope payload limit: 64 KiB;
+- bounded active transfers/buffer size;
+- idle/absolute transfer timeouts.
+
+## Receiver lifecycle
+
+Receiver state includes bounded transfer lifecycle and cleanup:
+
+- active-transfer limit;
+- idle timeout;
+- absolute lifetime;
+- explicit abort;
+- expiry sweep;
+- fragment/chunk invariant checking;
+- single-consumer `COMPLETE -> IMPORTING` transition;
+- best-effort buffer cleanup.
+
+A completed transfer becomes a `TransferImportSource` and feeds the existing vault import pipeline.
+
+## Vault integration
+
+Received plaintext is not persisted as a standalone decrypted file.
+
+```text
+Authenticated network chunks
+  -> TransferImportSource
+  -> existing VaultHandle.import()
+  -> encrypted VBL1 blob
+  -> encrypted catalog
+```
+
+The frozen vault semantics remain authoritative. Sharing does not receive VMK/FileKey access.
+
+## V1 persistence status
+
+Implemented in-memory abstractions:
+
+- sharing identity store;
+- sharing presence store;
+- trusted contact store;
+- signaling presence registry.
+
+Still pending intentionally:
+
+- platform-secure persistent Ed25519 identity store;
+- persistent trusted-contact store;
+- persistent local ReferenceCode store;
+- iOS production crypto implementation.
+
+Do not use plaintext private-key persistence as a shortcut.
+
+## Platform status
+
+Validated Sharing V1 baseline before identity/trust branch:
+
+- Desktop regression: green;
+- Android compile: green;
+- core-transfer: 66/66 tests green;
+- 1 MiB real encrypted fragmentation path: green;
+- vault import/reopen E2E: green;
+- signaling tests: green.
+
+iOS status remains:
+
+`iOS NOT VERIFIED / native crypto actuals pending macOS implementation and Xcode validation.`
+
+The identity/trusted-session branch is still awaiting its own local Gradle validation.
+
+## Next implementation layers
+
+After this branch passes its build gate:
+
+1. secure persistent identity/contact/presence stores;
+2. expose client-side UNREGISTER and safe presence rotation/revocation;
+3. remove the legacy circular SESSION_CONFIRM verification API;
+4. session lifecycle/timeouts around pending handshake state;
+5. app/UI integration for fingerprint/QR verification and share offer/accept flows;
+6. iOS libsodium/native crypto implementation and macOS/Xcode validation.
