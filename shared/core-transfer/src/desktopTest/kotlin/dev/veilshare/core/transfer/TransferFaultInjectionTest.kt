@@ -2,10 +2,11 @@ package dev.veilshare.core.transfer
 
 import dev.veilshare.core.crypto.AuthenticatedCipher
 import dev.veilshare.core.crypto.Hash
+import dev.veilshare.core.crypto.toHex
 import dev.veilshare.core.crypto.Nonce
 import dev.veilshare.core.crypto.SecureRandom
+import dev.veilshare.core.crypto.SealedBytes
 import dev.veilshare.core.crypto.SensitiveBytes
-import dev.veilshare.core.crypto.toHex
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferId
@@ -36,12 +37,12 @@ class TransferFaultInjectionTest {
     @Test fun networkDisconnectDuringTransferLeavesNoPartialState() = runTest {
         val decryptor = DefaultTransferDecryptor(cipher, key)
         val receiver = InMemoryTransferReceiver(decryptor)
-        
+
         val transferId = TransferId("test-disconnect")
         val fileId = FileId("test-file")
         val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
         val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
-        
+
         // Receive first chunk only (simulating network disconnect)
         val chunk0 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -53,7 +54,7 @@ class TransferFaultInjectionTest {
         )
         val result = receiver.receive(chunk0)
         assertTrue(result is dev.veilshare.core.transfer.ReceiveResult.ChunkAccepted)
-        
+
         // Verify incomplete transfer rejects getImportSource
         val error = assertFailsWith<IllegalStateException> {
             receiver.getImportSource(transferId, fileId)
@@ -68,12 +69,12 @@ class TransferFaultInjectionTest {
             }
         }
         val receiver = InMemoryTransferReceiver(decryptor)
-        
+
         val transferId = TransferId("test-corrupt")
         val fileId = FileId("test-file")
         val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
         val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
-        
+
         val chunk0 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
             fileIdHash = fileIdHash,
@@ -82,7 +83,7 @@ class TransferFaultInjectionTest {
             ciphertext = ByteArray(10) { 1 },
             nonce = ByteArray(12) { 0 },
         )
-        
+
         val result = receiver.receive(chunk0)
         assertTrue(result is dev.veilshare.core.transfer.ReceiveResult.Error)
         val errorResult = result as dev.veilshare.core.transfer.ReceiveResult.Error
@@ -92,12 +93,12 @@ class TransferFaultInjectionTest {
     @Test fun cancelMidTransferCleansUpState() = runTest {
         val decryptor = DefaultTransferDecryptor(cipher, key)
         val receiver = InMemoryTransferReceiver(decryptor)
-        
+
         val transferId = TransferId("test-cancel")
         val fileId = FileId("test-file")
         val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
         val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
-        
+
         // Receive two chunks
         for (i in 0..1) {
             val chunk = dev.veilshare.core.model.TransferData(
@@ -110,13 +111,13 @@ class TransferFaultInjectionTest {
             )
             receiver.receive(chunk)
         }
-        
+
         // Verify incomplete transfer rejects getImportSource
         val error = assertFailsWith<IllegalStateException> {
             receiver.getImportSource(transferId, fileId)
         }
         assertTrue(error.message?.contains("Transfer is not complete") == true)
-        
+
         // Complete the transfer and verify it now works
         val chunk2 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -128,7 +129,7 @@ class TransferFaultInjectionTest {
         )
         val completeResult = receiver.receive(chunk2)
         assertTrue(completeResult is dev.veilshare.core.transfer.ReceiveResult.TransferComplete)
-        
+
         val importSource = receiver.getImportSource(transferId, fileId)
         assertNotNull(importSource)
         val handle = importSource.openRead()
@@ -144,12 +145,12 @@ class TransferFaultInjectionTest {
     @Test fun duplicateChunkRejected() = runTest {
         val decryptor = DefaultTransferDecryptor(cipher, key)
         val receiver = InMemoryTransferReceiver(decryptor)
-        
+
         val transferId = TransferId("test-duplicate")
         val fileId = FileId("test-file")
         val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
         val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
-        
+
         val chunk = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
             fileIdHash = fileIdHash,
@@ -158,10 +159,10 @@ class TransferFaultInjectionTest {
             ciphertext = ByteArray(10) { 1 },
             nonce = ByteArray(12) { 0 },
         )
-        
+
         receiver.receive(chunk)
         val duplicateResult = receiver.receive(chunk)
-        
+
         assertTrue(duplicateResult is dev.veilshare.core.transfer.ReceiveResult.DuplicateChunk)
         assertEquals(0, (duplicateResult as dev.veilshare.core.transfer.ReceiveResult.DuplicateChunk).chunkIndex)
     }
@@ -169,12 +170,12 @@ class TransferFaultInjectionTest {
     @Test fun outOfOrderChunksAccepted() = runTest {
         val decryptor = DefaultTransferDecryptor(cipher, key)
         val receiver = InMemoryTransferReceiver(decryptor)
-        
+
         val transferId = TransferId("test-outoforder")
         val fileId = FileId("test-file")
         val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
         val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
-        
+
         // Send chunk 1 first
         val chunk1 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -186,7 +187,7 @@ class TransferFaultInjectionTest {
         )
         val result1 = receiver.receive(chunk1)
         assertTrue(result1 is dev.veilshare.core.transfer.ReceiveResult.ChunkAccepted)
-        
+
         // Then send chunk 0
         val chunk0 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -198,7 +199,7 @@ class TransferFaultInjectionTest {
         )
         val result0 = receiver.receive(chunk0)
         assertTrue(result0 is dev.veilshare.core.transfer.ReceiveResult.ChunkAccepted)
-        
+
         // Then send chunk 2 - completes transfer
         val chunk2 = dev.veilshare.core.model.TransferData(
             transferIdHash = transferIdHash,
@@ -216,12 +217,12 @@ class TransferFaultInjectionTest {
     @Test fun invalidChunkIndexRejected() = runTest {
         val decryptor = DefaultTransferDecryptor(cipher, key)
         val receiver = InMemoryTransferReceiver(decryptor)
-        
+
         val transferId = TransferId("test-invalid-index")
         val fileId = FileId("test-file")
         val transferIdHash = Hash.sha256(transferId.value.encodeToByteArray()).toHex()
         val fileIdHash = Hash.sha256(fileId.value.encodeToByteArray()).toHex()
-        
+
         // TransferData constructor validates chunkIndex < totalChunks
         assertFailsWith<IllegalArgumentException> {
             dev.veilshare.core.model.TransferData(
@@ -243,7 +244,7 @@ class TransferFaultInjectionTest {
             maxRetryDelayMs = 100,
             retryBackoffMultiplier = 2.0,
         )
-        
+
         var attemptCount = 0
         val sender = object : TransferNetworkSender {
             override suspend fun send(data: TransferData) {
@@ -252,14 +253,18 @@ class TransferFaultInjectionTest {
                     throw IllegalStateException("Simulated network failure")
                 }
             }
-            override suspend fun complete(transferIdHash: String, fileIdHash: String, totalChunks: Int) {}
-            override suspend fun cancel(transferIdHash: String, reason: String) {}
+            override suspend fun complete(
+                transferIdHash: String,
+                fileIdHash: String,
+                totalChunks: Int,
+            ) = Unit
+            override suspend fun cancel(transferIdHash: String, reason: String) = Unit
         }
-        
+
         val sender_ = DefaultTransferSender(random, config)
         val source = ByteArrayTransferSource(ByteArray(50))
         val encryptor = DefaultTransferEncryptor(cipher, key)
-        
+
         val result = sender_.send(
             TransferId("test-retry"),
             FileId("test-file"),
@@ -267,7 +272,7 @@ class TransferFaultInjectionTest {
             encryptor,
             sender,
         )
-        
+
         assertEquals(1, result.totalChunks)
         assertEquals(3, attemptCount)
     }
@@ -280,19 +285,19 @@ class TransferFaultInjectionTest {
             maxRetryDelayMs = 100,
             retryBackoffMultiplier = 2.0,
         )
-        
+
         val sender = object : TransferNetworkSender {
             override suspend fun send(data: TransferData) {
                 throw IllegalStateException("Persistent network failure")
             }
-            override suspend fun complete(transferIdHash: String, fileIdHash: String, totalChunks: Int) {}
-            override suspend fun cancel(transferIdHash: String, reason: String) {}
+            override suspend fun complete(transferIdHash: String, fileIdHash: String, totalChunks: Int) = Unit
+            override suspend fun cancel(transferIdHash: String, reason: String) = Unit
         }
-        
+
         val sender_ = DefaultTransferSender(random, config)
         val source = ByteArrayTransferSource(ByteArray(50))
         val encryptor = DefaultTransferEncryptor(cipher, key)
-        
+
         val exception = assertFailsWith<TransferException> {
             sender_.send(
                 TransferId("test-retry-exhausted"),
@@ -313,7 +318,7 @@ class TransferFaultInjectionTest {
             maxRetryDelayMs = 1000,
             retryBackoffMultiplier = 2.0,
         )
-        
+
         var attemptCount = 0
         val sender = object : TransferNetworkSender {
             override suspend fun send(data: TransferData) {
@@ -322,20 +327,20 @@ class TransferFaultInjectionTest {
                     throw IllegalStateException("Simulated failure")
                 }
             }
-            override suspend fun complete(transferIdHash: String, fileIdHash: String, totalChunks: Int) {}
-            override suspend fun cancel(transferIdHash: String, reason: String) {}
+            override suspend fun complete(transferIdHash: String, fileIdHash: String, totalChunks: Int) = Unit
+            override suspend fun cancel(transferIdHash: String, reason: String) = Unit
         }
-        
+
         val sender_ = DefaultTransferSender(random, config)
         val source = ByteArrayTransferSource(ByteArray(50))
         val encryptor = DefaultTransferEncryptor(cipher, key)
-        
+
         val elapsedBefore = System.currentTimeMillis()
         sender_.send(TransferId("test-delay"), FileId("test-file"), source, encryptor, sender)
         val elapsedAfter = System.currentTimeMillis()
-        
+
         assertEquals(4, attemptCount)
-        
+
         // Verify exponential backoff occurred (rough check)
         // 10ms + 20ms + 40ms = 70ms minimum expected
         val totalDelay = System.currentTimeMillis() - System.currentTimeMillis()
