@@ -1,10 +1,10 @@
 package dev.veilshare.core.identity
 
-import dev.veilshare.core.crypto.AeadStateProtector
 import dev.veilshare.core.crypto.DesktopProductionCrypto
 import dev.veilshare.core.crypto.SensitiveBytes
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.RandomBytesSource
+import dev.veilshare.core.securestore.AeadStateProtector
 import dev.veilshare.core.securestore.InMemoryAtomicStateStorage
 import dev.veilshare.core.securestore.ProtectedStateStore
 import kotlinx.coroutines.test.runTest
