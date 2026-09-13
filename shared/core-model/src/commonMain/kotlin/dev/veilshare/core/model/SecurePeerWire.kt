@@ -7,6 +7,10 @@ import kotlinx.serialization.Serializable
  *
  * Intentionally contains no TransferId. The signaling relay needs SessionId for routing,
  * but transfer identifiers and file metadata begin only after the session key exists.
+ *
+ * replyReferenceCode is routing metadata only. It is not an identity assertion and must
+ * never replace pinned contact trust. A receiver may use it to reply within this session;
+ * persistent route updates require a separately authenticated policy decision.
  */
 @Serializable
 enum class HandshakeMessageType {
@@ -22,6 +26,7 @@ data class HandshakePeerEnvelope(
     val sessionId: SessionId,
     @Serializable(with = Base64ByteArraySerializer::class)
     val payload: ByteArray,
+    val replyReferenceCode: ReferenceCode? = null,
 ) {
     init {
         SharingProtocol.requireSupported(protocolVersion)
