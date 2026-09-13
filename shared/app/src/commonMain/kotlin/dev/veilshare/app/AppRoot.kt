@@ -12,18 +12,15 @@ import dev.veilshare.ui.features.FoundationScreen
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.SharingFilePicker
-import dev.veilshare.ui.features.SharingFilePickerResult
-import dev.veilshare.ui.features.SharingReferenceCodeInput
+import dev.veilshare.ui.features.SharingPickedFile
+import dev.veilshare.ui.features.SharingRuntime
+import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
 private object UnavailableSharingFilePicker : SharingFilePicker {
-    override suspend fun pickFile(): SharingFilePickerResult? = null
-}
-
-private object UnavailableSharingReferenceCodeInput : SharingReferenceCodeInput {
-    override suspend fun getReferenceCode(): String? = null
+    override suspend fun pickFile(): SharingPickedFile? = null
 }
 
 data class AppEnvironment(
@@ -31,7 +28,7 @@ data class AppEnvironment(
     val picker: LocalFilePicker,
     val opener: VaultFileOpener,
     val sharingFilePicker: SharingFilePicker = UnavailableSharingFilePicker,
-    val sharingReferenceInput: SharingReferenceCodeInput = UnavailableSharingReferenceCodeInput,
+    val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
     val lockSignals: Flow<Unit> = emptyFlow(),
 )
 
@@ -44,7 +41,7 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
             picker = environment.picker,
             opener = environment.opener,
             sharingFilePicker = environment.sharingFilePicker,
-            sharingReferenceInput = environment.sharingReferenceInput,
+            sharingRuntime = environment.sharingRuntime,
             scope = scope,
         )
     }
