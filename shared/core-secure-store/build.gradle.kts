@@ -12,15 +12,21 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(project(":shared:core-model"))
             implementation(project(":shared:core-crypto"))
-            implementation(project(":shared:core-identity"))
-            implementation(project(":shared:core-secure-store"))
             implementation(libs.coroutines.core)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.coroutines.test)
+        }
+        val desktopMain by getting {
+            dependencies {
+                implementation(libs.jna.platform)
+            }
+        }
+        val desktopTest by getting {
+            dependsOn(sourceSets["commonTest"]!!)
+            dependsOn(sourceSets["desktopMain"]!!)
         }
         androidInstrumentedTest.dependencies {
             implementation(libs.kotlin.test)
@@ -32,7 +38,7 @@ kotlin {
 }
 
 android {
-    namespace = "dev.veilshare.core.contacts"
+    namespace = "dev.veilshare.core.securestore"
     compileSdk = 36
     defaultConfig {
         minSdk = 23
