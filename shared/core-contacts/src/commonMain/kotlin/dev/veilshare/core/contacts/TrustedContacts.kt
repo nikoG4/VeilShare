@@ -178,6 +178,20 @@ class TrustedContactManager(
         )
     }
 
+    /**
+     * Resolves only already-pinned identities from the privacy-preserving identity hash
+     * carried by SESSION_HELLO. The public key from the HELLO itself is deliberately not
+     * used as a trust source.
+     */
+    suspend fun findPinnedByIdentityHash(identityHash: String): PinnedPeerIdentity? = mutex.withLock {
+        require(identityHash.isNotBlank()) { "Identity hash is required" }
+        store.all()
+            .firstOrNull {
+                Hash.sha256(it.sharingIdentityId.value.encodeToByteArray()).toHex() == identityHash
+            }
+            ?.toPinnedBinding()
+    }
+
     suspend fun addVerified(
         alias: String,
         candidate: PeerIdentityCandidate,
