@@ -51,9 +51,9 @@ class AndroidKeystoreStateProtector(
         }
     }
 
-    private fun loadOrCreateKey(): SecretKey {
+    private fun loadOrCreateKey(): SecretKey = synchronized(KEY_CREATION_LOCK) {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (keyStore.getKey(alias, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(alias, null) as? SecretKey)?.let { return@synchronized it }
 
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         generator.init(
@@ -68,7 +68,7 @@ class AndroidKeystoreStateProtector(
                 .setUserAuthenticationRequired(false)
                 .build(),
         )
-        return generator.generateKey()
+        generator.generateKey()
     }
 
     companion object {
@@ -76,6 +76,7 @@ class AndroidKeystoreStateProtector(
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val GCM_NONCE_BYTES = 12
+        private val KEY_CREATION_LOCK = Any()
         private val MAGIC = byteArrayOf('V'.code.toByte(), 'S'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
     }
 }
