@@ -26,6 +26,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
       - name: Compile shared UI and app for Desktop
         run: ./gradlew :shared:ui-features:compileKotlinDesktop :shared:app:compileKotlinDesktop --no-daemon --stacktrace
 
