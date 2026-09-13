@@ -24,9 +24,9 @@ data class HandshakePeerEnvelope(
     val protocolVersion: Int,
     val messageType: HandshakeMessageType,
     val sessionId: SessionId,
-    val replyReferenceCode: ReferenceCode? = null,
     @Serializable(with = Base64ByteArraySerializer::class)
     val payload: ByteArray,
+    val replyReferenceCode: ReferenceCode? = null,
 ) {
     init {
         SharingProtocol.requireSupported(protocolVersion)
