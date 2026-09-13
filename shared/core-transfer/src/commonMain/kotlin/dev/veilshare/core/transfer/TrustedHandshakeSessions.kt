@@ -23,7 +23,6 @@ import dev.veilshare.core.platform.SignalingClient
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** Owns the four derived session keys. close() best-effort zeroizes all key arrays. */
 class EstablishedPeerSession internal constructor(
     val sessionId: SessionId,
     val peer: PinnedPeerIdentity,
@@ -33,9 +32,7 @@ class EstablishedPeerSession internal constructor(
     val keys: HandshakeKeys,
 ) : AutoCloseable {
     private var closed = false
-
     val isOpen: Boolean get() = !closed
-
     override fun close() {
         if (closed) return
         closed = true
@@ -46,12 +43,8 @@ class EstablishedPeerSession internal constructor(
     }
 }
 
-data class OutboundHandshakeCompletion(
-    val ack: SessionConfirmAck,
-    val session: EstablishedPeerSession,
-)
+data class OutboundHandshakeCompletion(val ack: SessionConfirmAck, val session: EstablishedPeerSession)
 
-/** Completes the sender side after a trusted outbound SESSION_HELLO was already sent. */
 class TrustedOutboundHandshakeCompleter(
     private val signalingClient: SignalingClient,
     private val identities: SharingIdentityManager,
@@ -60,81 +53,55 @@ class TrustedOutboundHandshakeCompleter(
     private val keyAgreement: X25519KeyAgreement,
     private val keyDeriver: KeyDeriver,
 ) {
-    suspend fun complete(
-        started: OutboundSessionStartResult.Started,
-        routedConfirm: RoutedHandshakeMessage,
-    ): OutboundHandshakeCompletion {
+    suspend fun complete(started: OutboundSessionStartResult.Started, routedConfirm: RoutedHandshakeMessage): OutboundHandshakeCompletion {
         val confirm = (routedConfirm.message as? DecodedPeerMessage.Confirm)?.value
             ?: throw IllegalArgumentException("Expected SESSION_CONFIRM")
         val peerRoute = routedConfirm.replyReferenceCode ?: started.peerReferenceCode
-
         val verifiedConfirm = handshake.verifySessionConfirmFromPinnedIdentity(
-            confirm = confirm,
-            expectedSharingIdentityIdHash = started.peer.sharingIdentityIdHash,
-            expectedSessionIdHash = sessionHash(started.sessionId),
-            expectedReceiverIdentityPublicKey = started.peer.publicKey,
-            signer = signer,
+            confirm,
+            started.peer.sharingIdentityIdHash,
+            sessionHash(started.sessionId),
+            started.peer.publicKey,
+            signer,
         )
-
         val senderEphemeral = keyAgreement.generateKeyPair()
         val localHandle = identities.getOrCreate(started.localContextId)
         try {
             val currentLocal = localHandle.publicIdentity
-            require(currentLocal.identityId == started.localIdentity.identityId) {
-                "Local sharing identity changed during handshake"
-            }
-            require(currentLocal.publicKey.bytes.contentEquals(started.localIdentity.publicKey.bytes)) {
-                "Local sharing public key changed during handshake"
-            }
-
+            require(currentLocal.identityId == started.localIdentity.identityId) { "Local sharing identity changed during handshake" }
+            require(currentLocal.publicKey.bytes.contentEquals(started.localIdentity.publicKey.bytes)) { "Local sharing public key changed during handshake" }
             val ack = localHandle.withKeyPair { keyPair ->
                 handshake.createSessionConfirmAck(
-                    senderSharingIdentityId = currentLocal.identityId,
-                    senderSharingKeyPair = keyPair,
-                    receiverSharingIdentityIdHash = started.peer.sharingIdentityIdHash,
-                    sessionId = started.sessionId,
-                    senderEphemeralKeyPair = senderEphemeral,
-                    receiverEphemeralPublicKey = verifiedConfirm.receiverEphemeralPublicKey,
-                    signer = signer,
+                    currentLocal.identityId,
+                    keyPair,
+                    started.peer.sharingIdentityIdHash,
+                    started.sessionId,
+                    senderEphemeral,
+                    verifiedConfirm.receiverEphemeralPublicKey,
+                    signer,
                 )
             }
-
-            HandshakeSignalingMessenger(
-                signalingClient = signalingClient,
-                sessionId = started.sessionId,
-                peerReferenceCode = peerRoute,
-                localReferenceCode = started.localReferenceCode,
-            ).send(DecodedPeerMessage.ConfirmAck(ack))
-
+            HandshakeSignalingMessenger(signalingClient, started.sessionId, peerRoute, started.localReferenceCode)
+                .send(DecodedPeerMessage.ConfirmAck(ack))
             val transcript = HandshakeTranscript(
-                protocolVersion = ack.protocolVersion,
-                senderIdentityIdHash = identityHash(currentLocal),
-                receiverIdentityIdHash = started.peer.sharingIdentityIdHash,
-                sessionIdHash = sessionHash(started.sessionId),
-                senderEphemeralPublicKey = senderEphemeral.publicKey.bytes.toBase64(),
-                receiverEphemeralPublicKey = verifiedConfirm.receiverEphemeralPublicKey.bytes.toBase64(),
+                ack.protocolVersion,
+                identityHash(currentLocal),
+                started.peer.sharingIdentityIdHash,
+                sessionHash(started.sessionId),
+                senderEphemeral.publicKey.bytes.toBase64(),
+                verifiedConfirm.receiverEphemeralPublicKey.bytes.toBase64(),
             )
-            require(ack.transcriptHash == transcript.computeTranscriptHash()) {
-                "Local ACK transcript does not match reconstructed transcript"
-            }
-
+            require(ack.transcriptHash == transcript.computeTranscriptHash()) { "Local ACK transcript does not match reconstructed transcript" }
             val keys = handshake.deriveHandshakeKeys(
-                localEphemeralPrivateKey = senderEphemeral.privateKey,
-                peerEphemeralPublicKey = verifiedConfirm.receiverEphemeralPublicKey,
-                transcript = transcript,
-                keyAgreement = keyAgreement,
-                keyDeriver = keyDeriver,
+                senderEphemeral.privateKey,
+                verifiedConfirm.receiverEphemeralPublicKey,
+                transcript,
+                keyAgreement,
+                keyDeriver,
             )
             return OutboundHandshakeCompletion(
-                ack = ack,
-                session = EstablishedPeerSession(
-                    sessionId = started.sessionId,
-                    peer = started.peer,
-                    localIdentity = currentLocal,
-                    localReferenceCode = started.localReferenceCode,
-                    peerReferenceCode = peerRoute,
-                    keys = keys,
-                ),
+                ack,
+                EstablishedPeerSession(started.sessionId, started.peer, currentLocal, started.localReferenceCode, peerRoute, keys),
             )
         } finally {
             localHandle.close()
@@ -144,23 +111,12 @@ class TrustedOutboundHandshakeCompleter(
 }
 
 sealed interface InboundSessionBeginResult {
-    data class Pending(
-        val handshake: PendingInboundHandshake,
-    ) : InboundSessionBeginResult
-
-    data class UnknownPeer(
-        val result: InboundHelloTrustResult.UnknownIdentity,
-    ) : InboundSessionBeginResult
-
-    data class ReplayRejected(
-        val sessionId: SessionId,
-    ) : InboundSessionBeginResult
+    data class Pending(val handshake: PendingInboundHandshake) : InboundSessionBeginResult
+    data class UnknownPeer(val result: InboundHelloTrustResult.UnknownIdentity) : InboundSessionBeginResult
+    data class ReplayRejected(val sessionId: SessionId) : InboundSessionBeginResult
+    data class CapacityRejected(val maxSeenSessions: Int) : InboundSessionBeginResult
 }
 
-/**
- * Verifies an inbound HELLO against local contact pins, claims its SessionId once, creates
- * a fresh receiver X25519 key, signs SESSION_CONFIRM and sends it to the reply route.
- */
 class TrustedInboundSessionResponder(
     private val signalingClient: SignalingClient,
     private val identities: SharingIdentityManager,
@@ -172,61 +128,44 @@ class TrustedInboundSessionResponder(
     private val keyDeriver: KeyDeriver,
     private val replayGuard: HandshakeReplayGuard = HandshakeReplayGuard(),
 ) {
-    suspend fun begin(
-        localContextId: SharingContextId,
-        sessionId: SessionId,
-        routedHello: RoutedHandshakeMessage,
-    ): InboundSessionBeginResult {
+    suspend fun begin(localContextId: SharingContextId, sessionId: SessionId, routedHello: RoutedHandshakeMessage): InboundSessionBeginResult {
         val hello = (routedHello.message as? DecodedPeerMessage.Hello)?.value
             ?: throw IllegalArgumentException("Expected SESSION_HELLO")
-        val peerRoute = requireNotNull(routedHello.replyReferenceCode) {
-            "Inbound SESSION_HELLO is missing replyReferenceCode"
-        }
-
+        val peerRoute = requireNotNull(routedHello.replyReferenceCode) { "Inbound SESSION_HELLO is missing replyReferenceCode" }
         return when (val trusted = helloVerifier.verify(sessionId, hello)) {
-            is InboundHelloTrustResult.UnknownIdentity ->
-                InboundSessionBeginResult.UnknownPeer(trusted)
-
+            is InboundHelloTrustResult.UnknownIdentity -> InboundSessionBeginResult.UnknownPeer(trusted)
             is InboundHelloTrustResult.Trusted -> {
-                // Claim only authenticated sessions so untrusted traffic cannot exhaust the cache.
-                if (!replayGuard.claim(sessionId)) {
-                    return InboundSessionBeginResult.ReplayRejected(sessionId)
+                when (replayGuard.claim(sessionId)) {
+                    HandshakeSessionClaim.REPLAY -> return InboundSessionBeginResult.ReplayRejected(sessionId)
+                    HandshakeSessionClaim.CAPACITY_EXCEEDED -> return InboundSessionBeginResult.CapacityRejected(HandshakeReplayPolicy.MAX_SEEN_SESSIONS)
+                    HandshakeSessionClaim.CLAIMED -> Unit
                 }
-
                 val localHandle = identities.getOrCreate(localContextId)
                 val localPresence = presence.getOrCreate(localContextId)
                 val receiverEphemeral = keyAgreement.generateKeyPair()
                 try {
                     val localIdentity = localHandle.publicIdentity
                     val confirm = localHandle.withKeyPair { keyPair ->
-                        handshake.createSessionConfirm(
-                            sharingIdentityId = localIdentity.identityId,
-                            sharingKeyPair = keyPair,
-                            sessionId = sessionId,
-                            receiverEphemeralKeyPair = receiverEphemeral,
-                            signer = signer,
-                        )
+                        handshake.createSessionConfirm(localIdentity.identityId, keyPair, sessionId, receiverEphemeral, signer)
                     }
-
                     HandshakeSignalingMessenger(
-                        signalingClient = signalingClient,
-                        sessionId = sessionId,
-                        peerReferenceCode = peerRoute,
-                        localReferenceCode = localPresence.referenceCode,
+                        signalingClient,
+                        sessionId,
+                        peerRoute,
+                        localPresence.referenceCode,
                     ).send(DecodedPeerMessage.Confirm(confirm))
-
                     InboundSessionBeginResult.Pending(
                         PendingInboundHandshake(
-                            sessionId = sessionId,
-                            peer = trusted.peer,
-                            localIdentity = localIdentity,
-                            localReferenceCode = localPresence.referenceCode,
-                            peerReferenceCode = peerRoute,
-                            receiverEphemeral = receiverEphemeral,
-                            handshake = handshake,
-                            signer = signer,
-                            keyAgreement = keyAgreement,
-                            keyDeriver = keyDeriver,
+                            sessionId,
+                            trusted.peer,
+                            localIdentity,
+                            localPresence.referenceCode,
+                            peerRoute,
+                            receiverEphemeral,
+                            handshake,
+                            signer,
+                            keyAgreement,
+                            keyDeriver,
                         ),
                     )
                 } catch (failure: Throwable) {
@@ -240,7 +179,6 @@ class TrustedInboundSessionResponder(
     }
 }
 
-/** Single-use receiver-side ephemeral state between CONFIRM and ACK. */
 class PendingInboundHandshake internal constructor(
     val sessionId: SessionId,
     val peer: PinnedPeerIdentity,
@@ -261,29 +199,22 @@ class PendingInboundHandshake internal constructor(
         consumed = true
         try {
             val verified = handshake.verifySessionConfirmAck(
-                ack = ack,
-                expectedSenderSharingIdentityIdHash = peer.sharingIdentityIdHash,
-                expectedReceiverSharingIdentityIdHash = identityHash(localIdentity),
-                expectedSessionIdHash = sessionHash(sessionId),
-                expectedReceiverEphemeralPublicKey = receiverEphemeral.publicKey,
-                expectedSenderIdentityPublicKey = peer.publicKey,
-                signer = signer,
+                ack,
+                peer.sharingIdentityIdHash,
+                identityHash(localIdentity),
+                sessionHash(sessionId),
+                receiverEphemeral.publicKey,
+                peer.publicKey,
+                signer,
             )
             val keys = handshake.deriveHandshakeKeys(
-                localEphemeralPrivateKey = receiverEphemeral.privateKey,
-                peerEphemeralPublicKey = verified.senderEphemeralPublicKey,
-                transcript = verified.transcript,
-                keyAgreement = keyAgreement,
-                keyDeriver = keyDeriver,
+                receiverEphemeral.privateKey,
+                verified.senderEphemeralPublicKey,
+                verified.transcript,
+                keyAgreement,
+                keyDeriver,
             )
-            EstablishedPeerSession(
-                sessionId = sessionId,
-                peer = peer,
-                localIdentity = localIdentity,
-                localReferenceCode = localReferenceCode,
-                peerReferenceCode = peerReferenceCode,
-                keys = keys,
-            )
+            EstablishedPeerSession(sessionId, peer, localIdentity, localReferenceCode, peerReferenceCode, keys)
         } finally {
             receiverEphemeral.privateKey.material.close()
         }
@@ -296,8 +227,5 @@ class PendingInboundHandshake internal constructor(
     }
 }
 
-private fun identityHash(identity: SharingPublicIdentity): String =
-    Hash.sha256(identity.identityId.value.encodeToByteArray()).toHex()
-
-private fun sessionHash(sessionId: SessionId): String =
-    Hash.sha256(sessionId.value.encodeToByteArray()).toHex()
+private fun identityHash(identity: SharingPublicIdentity): String = Hash.sha256(identity.identityId.value.encodeToByteArray()).toHex()
+private fun sessionHash(sessionId: SessionId): String = Hash.sha256(sessionId.value.encodeToByteArray()).toHex()
