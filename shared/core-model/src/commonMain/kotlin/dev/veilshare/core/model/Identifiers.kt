@@ -10,6 +10,24 @@ import kotlin.jvm.JvmInline
 @Serializable @JvmInline value class ContactId(val value: String) { init { require(value.isNotBlank()) } }
 @Serializable @JvmInline value class TransferId(val value: String) { init { require(value.isNotBlank()) } }
 @Serializable @JvmInline value class SessionId(val value: String) { init { require(value.isNotBlank()) } }
+
+/**
+ * Stable, local-only binding token for one unlocked vault persona.
+ *
+ * This is NOT a SharingContextId or network identity and must never be transmitted.
+ * Production vault services derive it from authenticated local vault metadata only so the
+ * application can look up a separately generated random SharingContextId.
+ */
+@Serializable
+@JvmInline
+value class LocalPersonaId(val value: String) {
+    init {
+        require(value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }) {
+            "LocalPersonaId must be lowercase SHA-256 hex"
+        }
+    }
+}
+
 @Serializable
 @JvmInline
 value class ReferenceCode(val value: String) {
