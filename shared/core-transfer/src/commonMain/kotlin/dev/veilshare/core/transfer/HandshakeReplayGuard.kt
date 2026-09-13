@@ -10,6 +10,12 @@ object HandshakeReplayPolicy {
     const val MAX_SEEN_SESSIONS = 4_096
 }
 
+enum class HandshakeSessionClaim {
+    CLAIMED,
+    REPLAY,
+    CAPACITY_EXCEEDED,
+}
+
 private object MonotonicHandshakeClock : TransferClock {
     private val origin = TimeSource.Monotonic.markNow()
     override fun nowMillis(): Long = origin.elapsedNow().inWholeMilliseconds
@@ -38,14 +44,13 @@ class HandshakeReplayGuard(
         require(maxEntries > 0) { "Handshake replay cache size must be positive" }
     }
 
-    /** Returns true exactly once for a SessionId during the configured TTL. */
-    suspend fun claim(sessionId: SessionId): Boolean = mutex.withLock {
+    suspend fun claim(sessionId: SessionId): HandshakeSessionClaim = mutex.withLock {
         val now = clock.nowMillis()
         cleanupExpiredLocked(now)
-        if (seen.containsKey(sessionId.value)) return@withLock false
-        if (seen.size >= maxEntries) return@withLock false
+        if (seen.containsKey(sessionId.value)) return@withLock HandshakeSessionClaim.REPLAY
+        if (seen.size >= maxEntries) return@withLock HandshakeSessionClaim.CAPACITY_EXCEEDED
         seen[sessionId.value] = now
-        true
+        HandshakeSessionClaim.CLAIMED
     }
 
     suspend fun contains(sessionId: SessionId): Boolean = mutex.withLock {
