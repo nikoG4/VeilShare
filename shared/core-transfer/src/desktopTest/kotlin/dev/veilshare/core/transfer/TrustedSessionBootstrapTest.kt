@@ -11,8 +11,10 @@ import dev.veilshare.core.crypto.JvmHandshakeProtocol
 import dev.veilshare.core.crypto.toBase64
 import dev.veilshare.core.crypto.toHex
 import dev.veilshare.core.identity.InMemorySharingIdentityStore
+import dev.veilshare.core.identity.InMemorySharingPresenceStore
 import dev.veilshare.core.identity.SharingContextId
 import dev.veilshare.core.identity.SharingIdentityManager
+import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.LookupResponse
 import dev.veilshare.core.model.LookupStatus
@@ -22,7 +24,6 @@ import dev.veilshare.core.model.RandomBytesSource
 import dev.veilshare.core.model.ReferenceCodes
 import dev.veilshare.core.model.RegisterRequest
 import dev.veilshare.core.model.RelayRequest
-import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SharingIdentityId
 import dev.veilshare.core.model.SharingProtocol
 import dev.veilshare.core.model.SignalingEnvelope
@@ -65,6 +66,7 @@ class TrustedSessionBootstrapTest {
             val starter = TrustedOutboundSessionStarter(
                 signalingClient = signaling,
                 identities = identities,
+                presence = presence(),
                 trustResolver = LookupTrustResolver(contacts),
                 handshake = handshake,
                 signer = signer,
@@ -81,7 +83,7 @@ class TrustedSessionBootstrapTest {
             assertEquals(peerCode, relay.toReferenceCode)
             assertEquals(result.sessionId, relay.sessionId)
 
-            val decoded = HandshakeSignalingInbox().decodeRelay(
+            val routed = HandshakeSignalingInbox().decodeRoutedRelay(
                 SignalingEnvelope(
                     protocolVersion = SharingProtocol.VERSION,
                     messageId = MessageId("forwarded-hello"),
@@ -90,7 +92,8 @@ class TrustedSessionBootstrapTest {
                     payload = relay.opaquePayload,
                 ),
             )
-            val hello = assertIs<DecodedPeerMessage.Hello>(decoded).value
+            assertEquals(result.localReferenceCode, routed.replyReferenceCode)
+            val hello = assertIs<DecodedPeerMessage.Hello>(routed.message).value
             assertEquals(result.hello, hello)
 
             handshake.verifySessionHello(
@@ -193,6 +196,7 @@ class TrustedSessionBootstrapTest {
     ) = TrustedOutboundSessionStarter(
         signalingClient = signaling,
         identities = identities(),
+        presence = presence(),
         trustResolver = LookupTrustResolver(contacts),
         handshake = handshake,
         signer = signer,
@@ -203,6 +207,11 @@ class TrustedSessionBootstrapTest {
         store = InMemorySharingIdentityStore(),
         random = CountingRandom(10),
         signer = signer,
+    )
+
+    private fun presence() = SharingPresenceManager(
+        store = InMemorySharingPresenceStore(),
+        random = CountingRandom(20),
     )
 
     private fun contacts() = TrustedContactManager(
