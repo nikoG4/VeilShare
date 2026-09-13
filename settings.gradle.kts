@@ -13,7 +13,7 @@ dependencyResolutionManagement {
 }
 
 include(":shared:core-model", ":shared:core-crypto", ":shared:core-vault", ":shared:core-identity")
-include(":shared:core-transfer", ":shared:core-contacts", ":shared:core-platform")
+include(":shared:core-transfer", ":shared:core-contacts", ":shared:core-platform", ":shared:core-secure-store")
 include(":shared:ui-design", ":shared:ui-features", ":shared:app")
 include(":desktopApp", ":server:signaling")
 include(":androidApp")
