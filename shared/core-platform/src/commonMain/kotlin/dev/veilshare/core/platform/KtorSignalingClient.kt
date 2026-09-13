@@ -11,6 +11,7 @@ import dev.veilshare.core.model.RegisterRequest
 import dev.veilshare.core.model.RelayRequest
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.model.SharingProtocol
+import dev.veilshare.core.model.UnregisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -61,6 +62,11 @@ class KtorSignalingClient(
 
     override suspend fun register(request: RegisterRequest) {
         val response = sendRequest(MessageType.REGISTER, request)
+        if (response.type == MessageType.ERROR) throw response.asClientException()
+    }
+
+    override suspend fun unregister(request: UnregisterRequest) {
+        val response = sendRequest(MessageType.UNREGISTER, request)
         if (response.type == MessageType.ERROR) throw response.asClientException()
     }
 
