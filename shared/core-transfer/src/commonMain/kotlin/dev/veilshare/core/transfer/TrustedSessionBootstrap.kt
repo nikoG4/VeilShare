@@ -8,6 +8,7 @@ import dev.veilshare.core.crypto.Ed25519Signer
 import dev.veilshare.core.crypto.HandshakeProtocol
 import dev.veilshare.core.identity.SharingContextId
 import dev.veilshare.core.identity.SharingIdentityManager
+import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.identity.SharingPublicIdentity
 import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.LookupStatus
@@ -21,7 +22,9 @@ import dev.veilshare.core.platform.SignalingClient
 sealed interface OutboundSessionStartResult {
     data class Started(
         val sessionId: SessionId,
+        val localContextId: SharingContextId,
         val localIdentity: SharingPublicIdentity,
+        val localReferenceCode: ReferenceCode,
         val peer: PinnedPeerIdentity,
         val hello: SessionHello,
         val peerReferenceCode: ReferenceCode,
@@ -50,6 +53,7 @@ sealed interface OutboundSessionStartResult {
 class TrustedOutboundSessionStarter(
     private val signalingClient: SignalingClient,
     private val identities: SharingIdentityManager,
+    private val presence: SharingPresenceManager,
     private val trustResolver: LookupTrustResolver,
     private val handshake: HandshakeProtocol,
     private val signer: Ed25519Signer,
@@ -62,6 +66,7 @@ class TrustedOutboundSessionStarter(
         val localHandle = identities.getOrCreate(localContextId)
         return try {
             val localIdentity = localHandle.publicIdentity
+            val localPresence = presence.getOrCreate(localContextId)
             val lookup = signalingClient.lookup(
                 LookupRequest(
                     referenceCode = peerReferenceCode,
@@ -95,11 +100,14 @@ class TrustedOutboundSessionStarter(
                             signalingClient = signalingClient,
                             sessionId = sessionId,
                             peerReferenceCode = peerReferenceCode,
+                            localReferenceCode = localPresence.referenceCode,
                         ).send(DecodedPeerMessage.Hello(hello))
 
                         OutboundSessionStartResult.Started(
                             sessionId = sessionId,
+                            localContextId = localContextId,
                             localIdentity = localIdentity,
+                            localReferenceCode = localPresence.referenceCode,
                             peer = decision.binding,
                             hello = hello,
                             peerReferenceCode = peerReferenceCode,
