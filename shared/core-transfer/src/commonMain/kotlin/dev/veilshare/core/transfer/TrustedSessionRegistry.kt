@@ -44,7 +44,7 @@ class TrustedSessionRegistry(
     private val mutex = Mutex()
     private val pending = linkedMapOf<String, PendingEntry>()
     private val established = linkedMapOf<String, EstablishedPeerSession>()
-    @Volatile private var closed = false
+    private var closed = false
 
     init {
         require(maxPending > 0)
@@ -141,6 +141,11 @@ class TrustedSessionRegistry(
 
     suspend fun establishedCount(): Int = mutex.withLock { established.size }
 
+    /** Preferred runtime shutdown path: serialized with all other registry operations. */
+    suspend fun shutdown() = mutex.withLock {
+        closeLocked()
+    }
+
     private fun sweepExpiredLocked(now: Long): Int {
         var removed = 0
         val iterator = pending.entries.iterator()
@@ -155,16 +160,20 @@ class TrustedSessionRegistry(
         return removed
     }
 
-    /**
-     * Synchronous shutdown is intended for externally serialized application teardown.
-     * Normal runtime removal/cancellation should use the suspend APIs above.
-     */
-    override fun close() {
+    private fun closeLocked() {
         if (closed) return
         closed = true
         pending.values.forEach { it.handshake.close() }
         pending.clear()
         established.values.forEach { it.close() }
         established.clear()
+    }
+
+    /**
+     * Synchronous fallback intended only for externally serialized application teardown.
+     * Runtime code should prefer shutdown().
+     */
+    override fun close() {
+        closeLocked()
     }
 }
