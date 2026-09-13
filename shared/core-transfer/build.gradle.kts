@@ -11,6 +11,8 @@ kotlin {
             implementation(project(":shared:core-crypto"))
             implementation(project(":shared:core-platform"))
             implementation(project(":shared:core-vault"))
+            implementation(project(":shared:core-identity"))
+            implementation(project(":shared:core-contacts"))
             implementation(libs.coroutines.core)
             implementation(libs.serialization.core)
             implementation(libs.serialization.json)
