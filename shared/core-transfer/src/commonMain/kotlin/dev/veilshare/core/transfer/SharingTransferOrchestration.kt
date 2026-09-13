@@ -3,6 +3,7 @@ package dev.veilshare.core.transfer
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.model.TransferAccept
+import dev.veilshare.core.model.TransferCancel
 import dev.veilshare.core.model.TransferFailure
 import dev.veilshare.core.model.TransferFailureCode
 import dev.veilshare.core.model.TransferId
@@ -73,8 +74,8 @@ fun validateTransferOffer(offer: TransferOffer, config: TransferConfig = Transfe
 /**
  * Sender-side state machine for one encrypted single-file transfer.
  *
- * OFFER must be accepted before DATA can be sent. The provided TransferSource is consumed
- * and closed by TransferSender exactly once when sendAccepted() begins.
+ * OFFER must be accepted before DATA can be sent. The TransferSource is closed on every
+ * terminal pre-send path; once DATA begins, TransferSender owns exactly-once close.
  */
 class OutgoingSharingTransfer(
     private val session: EstablishedPeerSession,
@@ -88,6 +89,7 @@ class OutgoingSharingTransfer(
     private val gate = PeerSessionGate(session.sessionId, transferId, fileId)
     private val networkSender = SignalingTransferNetworkSender(crypto.messenger)
     private var stateValue = OutgoingTransferState.NEW
+    private var sourceClosed = false
 
     val state: OutgoingTransferState get() = stateValue
 
@@ -128,14 +130,17 @@ class OutgoingSharingTransfer(
             is DecodedPeerMessage.Reject -> {
                 check(stateValue == OutgoingTransferState.OFFERED) { "Unexpected REJECT in state $stateValue" }
                 stateValue = OutgoingTransferState.REJECTED
+                closeSourceBestEffort()
                 OutgoingControlResult.Rejected(message.value.reason)
             }
             is DecodedPeerMessage.Cancel -> {
                 stateValue = OutgoingTransferState.CANCELLED
+                if (stateValue != OutgoingTransferState.SENDING) closeSourceBestEffort()
                 OutgoingControlResult.RemoteCancel(message.value.reason)
             }
             is DecodedPeerMessage.Failure -> {
                 stateValue = OutgoingTransferState.FAILED
+                if (stateValue != OutgoingTransferState.SENDING) closeSourceBestEffort()
                 OutgoingControlResult.RemoteFailure(message.value)
             }
             else -> OutgoingControlResult.Ignored(message)
@@ -152,9 +157,7 @@ class OutgoingSharingTransfer(
         } catch (cancelled: CancellationException) {
             stateValue = OutgoingTransferState.CANCELLED
             withContext(NonCancellable) {
-                runCatching {
-                    networkSender.cancel(transferIdHash(), "local cancellation")
-                }
+                runCatching { networkSender.cancel(transferIdHash(), "local cancellation") }
             }
             throw cancelled
         } catch (failure: Throwable) {
@@ -173,17 +176,39 @@ class OutgoingSharingTransfer(
                 }
             }
             throw failure
+        } finally {
+            // TransferSender owns source.close() once DATA begins.
+            sourceClosed = true
         }
     }
 
     suspend fun cancel(reason: String) {
         if (stateValue == OutgoingTransferState.COMPLETE || stateValue == OutgoingTransferState.CANCELLED) return
+        if (stateValue != OutgoingTransferState.SENDING) closeSourceBestEffort()
         networkSender.cancel(transferIdHash(), reason)
         stateValue = OutgoingTransferState.CANCELLED
     }
 
+    suspend fun abandonBeforeSend() {
+        check(stateValue != OutgoingTransferState.SENDING && stateValue != OutgoingTransferState.COMPLETE) {
+            "Cannot abandon a transfer after DATA started"
+        }
+        closeSourceBestEffort()
+        if (stateValue == OutgoingTransferState.NEW || stateValue == OutgoingTransferState.OFFERED || stateValue == OutgoingTransferState.ACCEPTED) {
+            stateValue = OutgoingTransferState.CANCELLED
+        }
+    }
+
     fun closeCrypto() {
         crypto.close()
+    }
+
+    private suspend fun closeSourceBestEffort() {
+        if (sourceClosed) return
+        sourceClosed = true
+        withContext(NonCancellable) {
+            runCatching { source.close() }
+        }
     }
 
     private fun transferIdHash(): String = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
@@ -214,7 +239,8 @@ suspend fun decodeIncomingTransferOffer(
  * Receiver-side state machine bound to one validated OFFER.
  *
  * Vault import is impossible until all authenticated DATA chunks completed locally and a
- * coherent remote COMPLETE message was received. CANCEL/FAILURE release receiver state.
+ * coherent remote COMPLETE message was received. State is checked before DATA touches the
+ * receiver so a peer cannot pre-buffer file content before local ACCEPT.
  */
 class IncomingSharingTransfer(
     private val session: EstablishedPeerSession,
@@ -225,7 +251,6 @@ class IncomingSharingTransfer(
     private val config: TransferConfig = TransferConfig(),
 ) {
     private val gate = PeerSessionGate(session.sessionId, transferId, offer.fileId)
-    private val dispatcher = ReceiverPeerDispatcher(receiver, gate)
     private val importer = ReceivedTransferVaultImporter(receiver)
     private var stateValue = IncomingTransferState.OFFERED
     private var localDataComplete = false
@@ -251,14 +276,15 @@ class IncomingSharingTransfer(
     suspend fun dispatch(envelope: SignalingEnvelope): IncomingDispatchResult {
         check(stateValue != IncomingTransferState.COMPLETE) { "Transfer is already complete" }
         val peerEnvelope = crypto.inbox.decodeRelay(envelope)
-        return when (val result = dispatcher.dispatch(peerEnvelope)) {
-            is ReceiverDispatchResult.Data -> {
+        return when (val message = gate.decode(peerEnvelope)) {
+            is DecodedPeerMessage.Data -> {
                 check(
                     stateValue == IncomingTransferState.ACCEPTED ||
                         stateValue == IncomingTransferState.RECEIVING,
                 ) { "DATA received before ACCEPT" }
                 stateValue = IncomingTransferState.RECEIVING
-                when (val receive = result.result) {
+                val receive = receiver.receive(message.value)
+                when (receive) {
                     is ReceiveResult.TransferComplete -> localDataComplete = true
                     is ReceiveResult.Error -> {
                         stateValue = IncomingTransferState.FAILED
@@ -268,30 +294,31 @@ class IncomingSharingTransfer(
                 }
                 IncomingDispatchResult.Data(receive)
             }
-            is ReceiverDispatchResult.RemoteCancel -> {
-                stateValue = IncomingTransferState.CANCELLED
-                IncomingDispatchResult.RemoteCancel(result.released)
-            }
-            is ReceiverDispatchResult.RemoteFailure -> {
-                stateValue = IncomingTransferState.FAILED
-                IncomingDispatchResult.RemoteFailure(result.released, result.failure)
-            }
-            is ReceiverDispatchResult.Control -> {
-                when (val message = result.message) {
-                    is DecodedPeerMessage.Complete -> {
-                        check(stateValue == IncomingTransferState.RECEIVING || stateValue == IncomingTransferState.ACCEPTED) {
-                            "Unexpected COMPLETE in state $stateValue"
-                        }
-                        require(message.value.totalChunks == offer.totalChunks) {
-                            "COMPLETE totalChunks does not match OFFER"
-                        }
-                        require(localDataComplete) { "Remote COMPLETE arrived before authenticated DATA completion" }
-                        stateValue = IncomingTransferState.READY_TO_IMPORT
-                        IncomingDispatchResult.ReadyToImport
-                    }
-                    else -> IncomingDispatchResult.Control(message)
+            is DecodedPeerMessage.Complete -> {
+                check(stateValue == IncomingTransferState.RECEIVING || stateValue == IncomingTransferState.ACCEPTED) {
+                    "Unexpected COMPLETE in state $stateValue"
                 }
+                require(message.value.totalChunks == offer.totalChunks) {
+                    "COMPLETE totalChunks does not match OFFER"
+                }
+                require(localDataComplete) { "Remote COMPLETE arrived before authenticated DATA completion" }
+                stateValue = IncomingTransferState.READY_TO_IMPORT
+                IncomingDispatchResult.ReadyToImport
             }
+            is DecodedPeerMessage.Cancel -> {
+                stateValue = IncomingTransferState.CANCELLED
+                val released = receiver.abort(message.value.transferIdHash, message.value.reason)
+                IncomingDispatchResult.RemoteCancel(released)
+            }
+            is DecodedPeerMessage.Failure -> {
+                stateValue = IncomingTransferState.FAILED
+                val released = receiver.abort(
+                    message.value.transferIdHash,
+                    "peer failure: ${message.value.code}",
+                )
+                IncomingDispatchResult.RemoteFailure(released, message.value)
+            }
+            else -> IncomingDispatchResult.Control(message)
         }
     }
 
@@ -312,6 +339,9 @@ class IncomingSharingTransfer(
             ).also {
                 stateValue = IncomingTransferState.COMPLETE
             }
+        } catch (cancelled: CancellationException) {
+            stateValue = IncomingTransferState.CANCELLED
+            throw cancelled
         } catch (failure: Throwable) {
             stateValue = IncomingTransferState.FAILED
             throw failure
@@ -322,7 +352,7 @@ class IncomingSharingTransfer(
         if (stateValue == IncomingTransferState.COMPLETE || stateValue == IncomingTransferState.CANCELLED) return
         val hash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
         receiver.abort(hash, reason)
-        crypto.messenger.send(DecodedPeerMessage.Cancel(dev.veilshare.core.model.TransferCancel(hash, reason)))
+        crypto.messenger.send(DecodedPeerMessage.Cancel(TransferCancel(hash, reason)))
         stateValue = IncomingTransferState.CANCELLED
     }
 
