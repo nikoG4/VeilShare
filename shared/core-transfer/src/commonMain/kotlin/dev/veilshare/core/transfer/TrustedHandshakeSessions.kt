@@ -17,16 +17,13 @@ import dev.veilshare.core.identity.SharingIdentityManager
 import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.identity.SharingPublicIdentity
 import dev.veilshare.core.model.ReferenceCode
-import dev.veilshare.core.model.SessionConfirm
 import dev.veilshare.core.model.SessionConfirmAck
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.platform.SignalingClient
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/**
- * Owns the four derived session keys. close() best-effort zeroizes all key arrays.
- */
+/** Owns the four derived session keys. close() best-effort zeroizes all key arrays. */
 class EstablishedPeerSession internal constructor(
     val sessionId: SessionId,
     val peer: PinnedPeerIdentity,
@@ -154,11 +151,15 @@ sealed interface InboundSessionBeginResult {
     data class UnknownPeer(
         val result: InboundHelloTrustResult.UnknownIdentity,
     ) : InboundSessionBeginResult
+
+    data class ReplayRejected(
+        val sessionId: SessionId,
+    ) : InboundSessionBeginResult
 }
 
 /**
- * Verifies an inbound HELLO against local contact pins, creates a fresh receiver X25519
- * key, signs SESSION_CONFIRM and sends it to the per-session reply route.
+ * Verifies an inbound HELLO against local contact pins, claims its SessionId once, creates
+ * a fresh receiver X25519 key, signs SESSION_CONFIRM and sends it to the reply route.
  */
 class TrustedInboundSessionResponder(
     private val signalingClient: SignalingClient,
@@ -169,6 +170,7 @@ class TrustedInboundSessionResponder(
     private val signer: Ed25519Signer,
     private val keyAgreement: X25519KeyAgreement,
     private val keyDeriver: KeyDeriver,
+    private val replayGuard: HandshakeReplayGuard = HandshakeReplayGuard(),
 ) {
     suspend fun begin(
         localContextId: SharingContextId,
@@ -186,6 +188,11 @@ class TrustedInboundSessionResponder(
                 InboundSessionBeginResult.UnknownPeer(trusted)
 
             is InboundHelloTrustResult.Trusted -> {
+                // Claim only authenticated sessions so untrusted traffic cannot exhaust the cache.
+                if (!replayGuard.claim(sessionId)) {
+                    return InboundSessionBeginResult.ReplayRejected(sessionId)
+                }
+
                 val localHandle = identities.getOrCreate(localContextId)
                 val localPresence = presence.getOrCreate(localContextId)
                 val receiverEphemeral = keyAgreement.generateKeyPair()
