@@ -1,6 +1,6 @@
 package dev.veilshare.ui.features
 
-import dev.veilshare.core.model.ReferenceCode
+import dev.veilshare.core.model.ReferenceCodes
 import dev.veilshare.core.vault.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +11,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -19,7 +20,7 @@ class LocalAppController(
     private val picker: LocalFilePicker,
     private val opener: VaultFileOpener,
     private val sharingFilePicker: SharingFilePicker,
-    private val sharingReferenceInput: SharingReferenceCodeInput,
+    private val sharingRuntime: SharingRuntime,
     private val scope: CoroutineScope,
     private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : AutoCloseable {
@@ -28,8 +29,12 @@ class LocalAppController(
     private var active: VaultHandle? = null
     private var importJob: Job? = null
     private var sharingJob: Job? = null
+    private var sharingEventsJob: Job? = null
+    private var selectedSharingFile: SharingPickedFile? = null
+    private var ownSharingReferenceCode: dev.veilshare.core.model.ReferenceCode? = null
 
     suspend fun initialize() {
+        ensureSharingEvents()
         mutableState.value = when (withContext(workDispatcher) { service.storageState() }) {
             LocalStorageState.EMPTY -> RootState.FirstRun()
             LocalStorageState.READY -> RootState.Locked()
@@ -65,7 +70,23 @@ class LocalAppController(
                 when (val result = withContext(workDispatcher) { service.unlock(credential) }) {
                     LocalUnlockResult.InvalidCredential -> mutableState.value = RootState.Locked(error = "No se pudo continuar.")
                     LocalUnlockResult.Corrupt -> mutableState.value = RootState.Fatal("No se pudo verificar el almacenamiento local. No se eliminó ningún dato.")
-                    is LocalUnlockResult.Ready -> { active?.close(); active = result.vault; mutableState.value = RootState.Unlocked(browserState(result.vault, null)) }
+                    is LocalUnlockResult.Ready -> {
+                        active?.close()
+                        active = result.vault
+                        mutableState.value = RootState.Unlocked(browserState(result.vault, null))
+                        ownSharingReferenceCode = result.personaId?.let { personaId ->
+                            try {
+                                when (val activation = withContext(workDispatcher) {
+                                    sharingRuntime.activate(personaId, result.vault)
+                                }) {
+                                    is SharingRuntimeActivation.Ready -> activation.referenceCode
+                                    is SharingRuntimeActivation.Unavailable -> null
+                                }
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }
                 }
             } catch (_: Exception) { mutableState.value = RootState.Locked(error = "No se pudo continuar.") }
             finally { credential.fill('\u0000') }
@@ -96,8 +117,6 @@ class LocalAppController(
                 } }
                 refreshAuthoritative(folder, "Importación completada.")
             } catch (cancelled: CancellationException) {
-                // Narrow non-cancellable region: authenticated read only. It never performs GC
-                // and exists solely to resolve whether CatalogDurable was crossed.
                 withContext(NonCancellable + workDispatcher) { active?.reload() }
                 refreshFromMemory(folder, "Importación cancelada.")
                 throw cancelled
@@ -137,99 +156,180 @@ class LocalAppController(
     }
 
     fun lock(message: String? = null) {
-        importJob?.cancel(); importJob = null; active?.close(); active = null; opener.cleanup()
+        importJob?.cancel(); importJob = null
+        sharingJob?.cancel(); sharingJob = null
+        closeSelectedSharingFileAsync()
+        ownSharingReferenceCode = null
+        scope.launch {
+            withContext(NonCancellable + workDispatcher) {
+                runCatching { sharingRuntime.cancelCurrent() }
+                runCatching { sharingRuntime.deactivate() }
+            }
+        }
+        active?.close(); active = null; opener.cleanup()
         mutableState.value = RootState.Locked(error = message)
     }
 
-    override fun close() = lock()
+    override fun close() {
+        lock()
+        sharingEventsJob?.cancel()
+        sharingEventsJob = null
+        sharingRuntime.close()
+    }
 
-    // Sharing actions
     fun startSharingSender() {
-        val current = mutableState.value
-        if (current !is RootState.Unlocked) return
+        if (mutableState.value !is RootState.Unlocked) return
+        if (ownSharingReferenceCode == null) {
+            mutableState.value = RootState.SharingSender(
+                SharingSenderState.Error("Compartir no está disponible en esta sesión.", canRetry = false),
+            )
+            return
+        }
         mutableState.value = RootState.SharingSender(SharingSenderState.Preparing())
     }
 
     fun selectSharingFile() {
-        val current = mutableState.value
-        if (current !is RootState.SharingSender) return
+        if ((mutableState.value as? RootState.SharingSender)?.state !is SharingSenderState.Preparing) return
         scope.launch {
-            val result = sharingFilePicker.pickFile()
-            if (result != null) {
-                val state = mutableState.value as? RootState.SharingSender
-                if (state != null) {
-                    val preparing = state.state as? SharingSenderState.Preparing
-                    if (preparing != null) {
-                        mutableState.value = RootState.SharingSender(
-                            preparing.copy(selectedFile = result.displayName)
-                        )
-                    }
-                }
+            val result = try { sharingFilePicker.pickFile() } catch (_: Exception) { null } ?: return@launch
+            val current = (mutableState.value as? RootState.SharingSender)?.state as? SharingSenderState.Preparing
+            if (current == null) {
+                withContext(NonCancellable + workDispatcher) { result.close() }
+                return@launch
             }
+            val previous = selectedSharingFile
+            selectedSharingFile = result
+            if (previous != null) withContext(NonCancellable + workDispatcher) { previous.close() }
+            mutableState.value = RootState.SharingSender(current.copy(selectedFile = result.displayName))
         }
     }
 
     fun enterSharingReferenceCode(referenceCode: String) {
-        val state = mutableState.value
-        if (state !is RootState.SharingSender) return
-        val preparing = state.state as? SharingSenderState.Preparing
-        if (preparing != null) {
-            mutableState.value = RootState.SharingSender(preparing.copy(referenceCode = referenceCode))
-        }
+        val preparing = (mutableState.value as? RootState.SharingSender)?.state as? SharingSenderState.Preparing ?: return
+        mutableState.value = RootState.SharingSender(preparing.copy(referenceCode = referenceCode))
     }
 
     fun startSharingTransfer() {
-        val state = mutableState.value
-        if (state !is RootState.SharingSender) return
-        val preparing = state.state as? SharingSenderState.Preparing ?: return
-        preparing.referenceCode?.let { refCode ->
-            preparing.selectedFile?.let { fileName ->
-                scope.launch {
-                    mutableState.value = RootState.SharingSender(SharingSenderState.Connecting(ReferenceCode(refCode)))
-                    // TODO: Implement actual sharing transfer
-                    // For now, simulate progress
-                    mutableState.value = RootState.SharingSender(SharingSenderState.Sending(SharingProgress(0, 1000000, 0, 10)))
-                    // Simulate completion
-                    kotlinx.coroutines.delay(2000)
-                    mutableState.value = RootState.SharingSender(SharingSenderState.Completed)
-                    kotlinx.coroutines.delay(1000)
-                    returnToBrowser()
+        val preparing = (mutableState.value as? RootState.SharingSender)?.state as? SharingSenderState.Preparing ?: return
+        if (sharingJob?.isActive == true) return
+        val file = selectedSharingFile ?: return
+        val referenceCode = try {
+            ReferenceCodes.parse(preparing.referenceCode ?: return)
+        } catch (_: IllegalArgumentException) {
+            mutableState.value = RootState.SharingSender(SharingSenderState.Error("El código de referencia no es válido."))
+            return
+        }
+
+        // Runtime owns the file from this point and must close it exactly once.
+        selectedSharingFile = null
+        mutableState.value = RootState.SharingSender(SharingSenderState.Connecting(referenceCode))
+        sharingJob = scope.launch {
+            try {
+                val result = withContext(workDispatcher) {
+                    sharingRuntime.send(referenceCode, file) { progress ->
+                        mutableState.value = RootState.SharingSender(SharingSenderState.Sending(progress))
+                    }
                 }
+                mutableState.value = when (result) {
+                    SharingSendResult.Completed -> RootState.SharingSender(SharingSenderState.Completed)
+                    is SharingSendResult.NeedsVerification -> RootState.SharingSender(
+                        SharingSenderState.Error("Verifica la identidad del destinatario: ${result.fingerprint}", canRetry = false),
+                    )
+                    is SharingSendResult.KeyMismatch -> RootState.SharingSender(
+                        SharingSenderState.Error("La identidad del contacto cambió. Verifica nuevamente el contacto.", canRetry = false),
+                    )
+                    is SharingSendResult.Unavailable -> RootState.SharingSender(
+                        SharingSenderState.Error(result.reason ?: "Compartir no está disponible.", canRetry = false),
+                    )
+                    is SharingSendResult.Failed -> RootState.SharingSender(
+                        SharingSenderState.Error(result.reason ?: "No se pudo enviar el archivo."),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.cancelCurrent() } }
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = RootState.SharingSender(SharingSenderState.Error("No se pudo enviar el archivo."))
+            } finally {
+                sharingJob = null
             }
         }
     }
 
     fun cancelSharing() {
-        sharingJob?.cancel()
-        sharingJob = null
+        sharingJob?.cancel(); sharingJob = null
+        closeSelectedSharingFileAsync()
+        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.cancelCurrent() } } }
         val current = mutableState.value
-        if (current is RootState.SharingSender) {
-            mutableState.value = RootState.SharingSender(SharingSenderState.Cancelled)
-        } else if (current is RootState.SharingReceiver) {
-            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Cancelled)
+        mutableState.value = when (current) {
+            is RootState.SharingSender -> RootState.SharingSender(SharingSenderState.Cancelled)
+            is RootState.SharingReceiver -> RootState.SharingReceiver(SharingReceiverState.Cancelled)
+            else -> current
         }
+    }
+
+    fun finishSharing() {
+        closeSelectedSharingFileAsync()
+        returnToBrowser()
+    }
+
+    fun startSharingReceiver() {
+        if (mutableState.value !is RootState.Unlocked) return
+        val referenceCode = ownSharingReferenceCode
+        if (referenceCode == null) {
+            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("Compartir no está disponible en esta sesión."))
+            return
+        }
+        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
+    }
+
+    fun acceptIncomingSharing() {
+        if ((mutableState.value as? RootState.SharingReceiver)?.state !is SharingReceiverState.Incoming) return
+        sharingJob = scope.launch {
+            try { withContext(workDispatcher) { sharingRuntime.acceptIncoming() } }
+            catch (_: Exception) { mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("No se pudo aceptar el archivo.")) }
+        }
+    }
+
+    fun rejectIncomingSharing() {
+        if ((mutableState.value as? RootState.SharingReceiver)?.state !is SharingReceiverState.Incoming) return
+        sharingJob = scope.launch {
+            try { withContext(workDispatcher) { sharingRuntime.rejectIncoming() }; mutableState.value = RootState.SharingReceiver(SharingReceiverState.Rejected) }
+            catch (_: Exception) { mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("No se pudo rechazar el archivo.")) }
+            finally { sharingJob = null }
+        }
+    }
+
+    private fun ensureSharingEvents() {
+        if (sharingEventsJob != null) return
+        sharingEventsJob = scope.launch {
+            sharingRuntime.events.collect { event ->
+                val receiver = mutableState.value as? RootState.SharingReceiver ?: return@collect
+                mutableState.value = when (event) {
+                    is SharingRuntimeEvent.IncomingOffer -> RootState.SharingReceiver(
+                        SharingReceiverState.Incoming(event.senderIdentity, event.fileName, event.fileSize),
+                    )
+                    is SharingRuntimeEvent.Receiving -> RootState.SharingReceiver(SharingReceiverState.Receiving(event.progress))
+                    SharingRuntimeEvent.IncomingCompleted -> RootState.SharingReceiver(SharingReceiverState.Completed)
+                    is SharingRuntimeEvent.Failed -> RootState.SharingReceiver(
+                        SharingReceiverState.Error(event.reason ?: "La transferencia falló."),
+                    )
+                    SharingRuntimeEvent.Cancelled -> RootState.SharingReceiver(SharingReceiverState.Cancelled)
+                }
+            }
+        }
+    }
+
+    private fun closeSelectedSharingFileAsync() {
+        val selected = selectedSharingFile ?: return
+        selectedSharingFile = null
+        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { selected.close() } } }
     }
 
     private fun returnToBrowser() {
         val activeVault = active
-        if (activeVault != null) {
-            mutableState.value = RootState.Unlocked(browserState(activeVault, null))
-        } else {
-            mutableState.value = RootState.Locked()
-        }
-    }
-
-    // Sharing receiver (stub for now)
-    fun startSharingReceiver() {
-        val current = mutableState.value
-        if (current !is RootState.Unlocked) return
-        scope.launch {
-            val code = sharingReferenceInput.getReferenceCode()
-            code?.let { refCode ->
-                mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(ReferenceCode(refCode)))
-                // TODO: Implement actual receiver logic
-            }
-        }
+        if (activeVault != null) mutableState.value = RootState.Unlocked(browserState(activeVault, null))
+        else mutableState.value = RootState.Locked()
     }
 
     private fun mutate(label: String, operation: suspend (VaultHandle, BrowserState) -> Unit) {
