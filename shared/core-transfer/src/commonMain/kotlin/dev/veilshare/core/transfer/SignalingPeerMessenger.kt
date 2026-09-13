@@ -90,11 +90,15 @@ class SecurePeerChannel(
 /**
  * Pre-key messenger. It accepts only the three signed handshake messages and deliberately
  * uses HandshakePeerEnvelope, which contains no TransferId or file metadata.
+ *
+ * localReferenceCode is routing metadata only; it lets the peer reply during this handshake
+ * and is never treated as an identity assertion.
  */
 class HandshakeSignalingMessenger(
     private val signalingClient: SignalingClient,
     private val sessionId: SessionId,
     private val peerReferenceCode: ReferenceCode,
+    private val localReferenceCode: ReferenceCode? = null,
     private val json: Json = strictPeerJson(),
 ) {
     suspend fun send(message: DecodedPeerMessage) {
@@ -108,6 +112,7 @@ class HandshakeSignalingMessenger(
             protocolVersion = message.protocolVersion,
             messageType = type,
             sessionId = sessionId,
+            replyReferenceCode = localReferenceCode,
             payload = payload,
         )
         relaySerialized(json.encodeToString(handshake).encodeToByteArray())
@@ -125,10 +130,18 @@ class HandshakeSignalingMessenger(
     }
 }
 
+data class RoutedHandshakeMessage(
+    val message: DecodedPeerMessage,
+    val replyReferenceCode: ReferenceCode?,
+)
+
 class HandshakeSignalingInbox(
     private val json: Json = strictPeerJson(),
 ) {
-    fun decodeRelay(envelope: SignalingEnvelope): DecodedPeerMessage {
+    fun decodeRelay(envelope: SignalingEnvelope): DecodedPeerMessage =
+        decodeRoutedRelay(envelope).message
+
+    fun decodeRoutedRelay(envelope: SignalingEnvelope): RoutedHandshakeMessage {
         require(envelope.type == MessageType.RELAY) { "Expected RELAY signaling envelope" }
         require(envelope.payload.isNotEmpty()) { "RELAY payload is empty" }
         val handshake = json.decodeFromString<HandshakePeerEnvelope>(envelope.payload.decodeToString())
@@ -146,7 +159,10 @@ class HandshakeSignalingInbox(
         require(decoded.protocolVersion == handshake.protocolVersion) {
             "Handshake payload protocol version does not match envelope"
         }
-        return decoded
+        return RoutedHandshakeMessage(
+            message = decoded,
+            replyReferenceCode = handshake.replyReferenceCode,
+        )
     }
 }
 
