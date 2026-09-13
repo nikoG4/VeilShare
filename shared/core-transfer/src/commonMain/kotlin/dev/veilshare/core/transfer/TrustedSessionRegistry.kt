@@ -26,9 +26,9 @@ sealed interface PendingRegistrationResult {
 /**
  * Process-local owner for pending inbound handshakes and established peer sessions.
  *
- * Pending X25519 private material is always closed when an entry expires, is replaced by
- * a terminal operation, or the registry is closed. Established session keys remain owned
- * by EstablishedPeerSession and are zeroized when removed/closed.
+ * Pending X25519 private material is always closed when an entry expires, is rejected,
+ * or the registry is closed. Established session keys are zeroized on removal/close.
+ * Potentially expensive handshake crypto is never executed while the registry mutex is held.
  */
 class TrustedSessionRegistry(
     private val clock: TransferClock = MonotonicTrustedSessionClock,
@@ -44,7 +44,7 @@ class TrustedSessionRegistry(
     private val mutex = Mutex()
     private val pending = linkedMapOf<String, PendingEntry>()
     private val established = linkedMapOf<String, EstablishedPeerSession>()
-    private var closed = false
+    @Volatile private var closed = false
 
     init {
         require(maxPending > 0)
@@ -71,20 +71,34 @@ class TrustedSessionRegistry(
     suspend fun completeInbound(
         sessionId: SessionId,
         ack: SessionConfirmAck,
-    ): EstablishedPeerSession = mutex.withLock {
-        check(!closed) { "Trusted session registry is closed" }
-        sweepExpiredLocked(clock.nowMillis())
-        check(established.size < maxEstablished) { "Established session capacity exceeded" }
-        val entry = pending.remove(sessionId.value)
-            ?: throw IllegalStateException("Pending inbound handshake not found")
+    ): EstablishedPeerSession {
+        val entry = mutex.withLock {
+            check(!closed) { "Trusted session registry is closed" }
+            sweepExpiredLocked(clock.nowMillis())
+            check(established.size < maxEstablished) { "Established session capacity exceeded" }
+            pending.remove(sessionId.value)
+                ?: throw IllegalStateException("Pending inbound handshake not found")
+        }
+
         val session = try {
             entry.handshake.complete(ack)
         } catch (failure: Throwable) {
             entry.handshake.close()
             throw failure
         }
-        established[sessionId.value] = session
-        session
+
+        try {
+            mutex.withLock {
+                check(!closed) { "Trusted session registry was closed during handshake completion" }
+                check(!established.containsKey(sessionId.value)) { "Session already established" }
+                check(established.size < maxEstablished) { "Established session capacity exceeded" }
+                established[sessionId.value] = session
+            }
+            return session
+        } catch (failure: Throwable) {
+            session.close()
+            throw failure
+        }
     }
 
     suspend fun registerEstablished(session: EstablishedPeerSession) = mutex.withLock {
@@ -141,6 +155,10 @@ class TrustedSessionRegistry(
         return removed
     }
 
+    /**
+     * Synchronous shutdown is intended for externally serialized application teardown.
+     * Normal runtime removal/cancellation should use the suspend APIs above.
+     */
     override fun close() {
         if (closed) return
         closed = true
