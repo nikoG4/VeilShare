@@ -161,6 +161,7 @@ private fun decodeIdentities(bytes: ByteArray): MutableMap<String, StoredSharing
     try {
         repeat(count) {
             val contextId = SharingContextId(reader.readString(MAX_ID_TEXT_BYTES))
+            require(contextId.value !in result) { "Duplicate sharing identity context" }
             val identityId = SharingIdentityId(reader.readString(MAX_ID_TEXT_BYTES))
             val privateSeed = reader.readBytes(StoredSharingIdentity.ED25519_KEY_BYTES)
             val publicKey = reader.readBytes(StoredSharingIdentity.ED25519_KEY_BYTES)
@@ -171,7 +172,7 @@ private fun decodeIdentities(bytes: ByteArray): MutableMap<String, StoredSharing
                 publicKey.fill(0)
                 throw failure
             }
-            require(result.put(contextId.value, record) == null) { "Duplicate sharing identity context" }
+            result[contextId.value] = record
         }
         reader.requireFinished()
         return result
@@ -207,8 +208,9 @@ private fun decodePresences(bytes: ByteArray): MutableMap<String, SharingPresenc
     val result = linkedMapOf<String, SharingPresence>()
     repeat(count) {
         val context = SharingContextId(reader.readString(MAX_ID_TEXT_BYTES))
+        require(context.value !in result) { "Duplicate sharing presence context" }
         val code = ReferenceCodes.parse(reader.readString(MAX_REFERENCE_CODE_BYTES))
-        require(result.put(context.value, SharingPresence(context, code)) == null) { "Duplicate sharing presence context" }
+        result[context.value] = SharingPresence(context, code)
     }
     reader.requireFinished()
     return result
