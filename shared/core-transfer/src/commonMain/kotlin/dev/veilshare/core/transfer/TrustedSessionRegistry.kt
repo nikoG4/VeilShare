@@ -4,11 +4,17 @@ import dev.veilshare.core.model.SessionConfirmAck
 import dev.veilshare.core.model.SessionId
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.TimeSource
 
 object TrustedSessionRegistryPolicy {
     const val MAX_PENDING_HANDSHAKES = 16
     const val MAX_ESTABLISHED_SESSIONS = 8
     const val PENDING_HANDSHAKE_TIMEOUT_MS = 2L * 60L * 1000L
+}
+
+private object MonotonicTrustedSessionClock : TransferClock {
+    private val origin = TimeSource.Monotonic.markNow()
+    override fun nowMillis(): Long = origin.elapsedNow().inWholeMilliseconds
 }
 
 sealed interface PendingRegistrationResult {
@@ -25,7 +31,7 @@ sealed interface PendingRegistrationResult {
  * by EstablishedPeerSession and are zeroized when removed/closed.
  */
 class TrustedSessionRegistry(
-    private val clock: TransferClock,
+    private val clock: TransferClock = MonotonicTrustedSessionClock,
     private val maxPending: Int = TrustedSessionRegistryPolicy.MAX_PENDING_HANDSHAKES,
     private val maxEstablished: Int = TrustedSessionRegistryPolicy.MAX_ESTABLISHED_SESSIONS,
     private val pendingTimeoutMs: Long = TrustedSessionRegistryPolicy.PENDING_HANDSHAKE_TIMEOUT_MS,
