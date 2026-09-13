@@ -2,7 +2,6 @@ package dev.veilshare.core.securestore
 
 import com.sun.jna.Platform
 import com.sun.jna.platform.win32.Crypt32Util
-import com.sun.jna.platform.win32.WinCrypt
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
@@ -24,7 +23,7 @@ class WindowsDpapiStateProtector : SecureStateProtector {
             Crypt32Util.cryptProtectData(
                 plaintext,
                 entropy,
-                WinCrypt.CRYPTPROTECT_UI_FORBIDDEN,
+                CRYPTPROTECT_UI_FORBIDDEN,
                 "VeilShare secure sharing state",
                 null,
             )
@@ -39,12 +38,17 @@ class WindowsDpapiStateProtector : SecureStateProtector {
             Crypt32Util.cryptUnprotectData(
                 protectedBytes,
                 entropy,
-                WinCrypt.CRYPTPROTECT_UI_FORBIDDEN,
+                CRYPTPROTECT_UI_FORBIDDEN,
                 null,
             )
         } finally {
             entropy.fill(0)
         }
+    }
+
+    private companion object {
+        // WinCrypt.h: CRYPTPROTECT_UI_FORBIDDEN = 0x1.
+        const val CRYPTPROTECT_UI_FORBIDDEN = 0x1
     }
 }
 
