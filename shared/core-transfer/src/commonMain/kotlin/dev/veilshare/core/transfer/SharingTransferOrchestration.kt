@@ -4,6 +4,7 @@ import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.model.TransferAccept
 import dev.veilshare.core.model.TransferCancel
+import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferFailure
 import dev.veilshare.core.model.TransferFailureCode
 import dev.veilshare.core.model.TransferId
@@ -15,6 +16,8 @@ import dev.veilshare.core.vault.VaultHandle
 import dev.veilshare.core.vault.VaultItem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 enum class OutgoingTransferState {
@@ -76,6 +79,10 @@ fun validateTransferOffer(offer: TransferOffer, config: TransferConfig = Transfe
  *
  * OFFER must be accepted before DATA can be sent. The TransferSource is closed on every
  * terminal pre-send path; once DATA begins, TransferSender owns exactly-once close.
+ *
+ * Remote CANCEL/FAILURE may arrive while DATA is being fragmented. The transport wrapper
+ * checks terminal state before every DATA frame and COMPLETE so the next send boundary
+ * aborts with CancellationException instead of continuing a peer-terminated transfer.
  */
 class OutgoingSharingTransfer(
     private val session: EstablishedPeerSession,
@@ -87,9 +94,31 @@ class OutgoingSharingTransfer(
     private val config: TransferConfig = TransferConfig(),
 ) {
     private val gate = PeerSessionGate(session.sessionId, transferId, fileId)
-    private val networkSender = SignalingTransferNetworkSender(crypto.messenger)
+    private val signalingSender = SignalingTransferNetworkSender(crypto.messenger)
+    private val stateMutex = Mutex()
+    private val sourceMutex = Mutex()
     private var stateValue = OutgoingTransferState.NEW
     private var sourceClosed = false
+
+    private val networkSender = object : TransferNetworkSender {
+        override suspend fun send(data: TransferData) {
+            requireSendingState()
+            signalingSender.send(data)
+        }
+
+        override suspend fun complete(
+            transferIdHash: String,
+            fileIdHash: String,
+            totalChunks: Int,
+        ) {
+            requireSendingState()
+            signalingSender.complete(transferIdHash, fileIdHash, totalChunks)
+        }
+
+        override suspend fun cancel(transferIdHash: String, reason: String) {
+            signalingSender.cancel(transferIdHash, reason)
+        }
+    }
 
     val state: OutgoingTransferState get() = stateValue
 
@@ -110,38 +139,56 @@ class OutgoingSharingTransfer(
     }
 
     suspend fun sendOffer(): TransferOffer {
-        check(stateValue == OutgoingTransferState.NEW) { "OFFER can only be sent once" }
+        stateMutex.withLock {
+            check(stateValue == OutgoingTransferState.NEW) { "OFFER can only be sent once" }
+        }
         val value = offer
         validateTransferOffer(value, config)
         crypto.messenger.send(DecodedPeerMessage.Offer(value))
-        stateValue = OutgoingTransferState.OFFERED
+        stateMutex.withLock {
+            check(stateValue == OutgoingTransferState.NEW) { "Transfer changed state while OFFER was sending" }
+            stateValue = OutgoingTransferState.OFFERED
+        }
         return value
     }
 
     suspend fun handleControl(envelope: SignalingEnvelope): OutgoingControlResult {
-        check(stateValue != OutgoingTransferState.COMPLETE) { "Transfer is already complete" }
         val peerEnvelope = crypto.inbox.decodeRelay(envelope)
         return when (val message = gate.decode(peerEnvelope)) {
             is DecodedPeerMessage.Accept -> {
-                check(stateValue == OutgoingTransferState.OFFERED) { "Unexpected ACCEPT in state $stateValue" }
-                stateValue = OutgoingTransferState.ACCEPTED
+                stateMutex.withLock {
+                    check(stateValue == OutgoingTransferState.OFFERED) { "Unexpected ACCEPT in state $stateValue" }
+                    stateValue = OutgoingTransferState.ACCEPTED
+                }
                 OutgoingControlResult.Accepted
             }
             is DecodedPeerMessage.Reject -> {
-                check(stateValue == OutgoingTransferState.OFFERED) { "Unexpected REJECT in state $stateValue" }
-                stateValue = OutgoingTransferState.REJECTED
+                stateMutex.withLock {
+                    check(stateValue == OutgoingTransferState.OFFERED) { "Unexpected REJECT in state $stateValue" }
+                    stateValue = OutgoingTransferState.REJECTED
+                }
                 closeSourceBestEffort()
                 OutgoingControlResult.Rejected(message.value.reason)
             }
             is DecodedPeerMessage.Cancel -> {
-                val wasSending = stateValue == OutgoingTransferState.SENDING
-                stateValue = OutgoingTransferState.CANCELLED
+                val wasSending = stateMutex.withLock {
+                    val sending = stateValue == OutgoingTransferState.SENDING
+                    if (stateValue != OutgoingTransferState.COMPLETE) {
+                        stateValue = OutgoingTransferState.CANCELLED
+                    }
+                    sending
+                }
                 if (!wasSending) closeSourceBestEffort()
                 OutgoingControlResult.RemoteCancel(message.value.reason)
             }
             is DecodedPeerMessage.Failure -> {
-                val wasSending = stateValue == OutgoingTransferState.SENDING
-                stateValue = OutgoingTransferState.FAILED
+                val wasSending = stateMutex.withLock {
+                    val sending = stateValue == OutgoingTransferState.SENDING
+                    if (stateValue != OutgoingTransferState.COMPLETE) {
+                        stateValue = OutgoingTransferState.FAILED
+                    }
+                    sending
+                }
                 if (!wasSending) closeSourceBestEffort()
                 OutgoingControlResult.RemoteFailure(message.value)
             }
@@ -150,64 +197,113 @@ class OutgoingSharingTransfer(
     }
 
     suspend fun sendAccepted(): TransferResult {
-        check(stateValue == OutgoingTransferState.ACCEPTED) { "Transfer must be accepted before DATA" }
-        stateValue = OutgoingTransferState.SENDING
+        stateMutex.withLock {
+            check(stateValue == OutgoingTransferState.ACCEPTED) { "Transfer must be accepted before DATA" }
+            stateValue = OutgoingTransferState.SENDING
+        }
+
         return try {
             val result = sender.send(transferId, fileId, source, crypto.encryptor, networkSender)
-            stateValue = OutgoingTransferState.COMPLETE
+            val finalState = stateMutex.withLock {
+                if (stateValue == OutgoingTransferState.SENDING) {
+                    stateValue = OutgoingTransferState.COMPLETE
+                }
+                stateValue
+            }
+            if (finalState != OutgoingTransferState.COMPLETE) {
+                throw CancellationException("Peer terminated transfer while sender was completing: $finalState")
+            }
             result
         } catch (cancelled: CancellationException) {
-            stateValue = OutgoingTransferState.CANCELLED
-            withContext(NonCancellable) {
-                runCatching { networkSender.cancel(transferIdHash(), "local cancellation") }
+            val notifyPeer = stateMutex.withLock {
+                val alreadyRemoteTerminal =
+                    stateValue == OutgoingTransferState.CANCELLED || stateValue == OutgoingTransferState.FAILED
+                if (!alreadyRemoteTerminal) stateValue = OutgoingTransferState.CANCELLED
+                !alreadyRemoteTerminal
+            }
+            if (notifyPeer) {
+                withContext(NonCancellable) {
+                    runCatching { signalingSender.cancel(transferIdHash(), "local cancellation") }
+                }
             }
             throw cancelled
         } catch (failure: Throwable) {
-            stateValue = OutgoingTransferState.FAILED
-            withContext(NonCancellable) {
-                runCatching {
-                    crypto.messenger.send(
-                        DecodedPeerMessage.Failure(
-                            TransferFailure(
-                                transferIdHash = transferIdHash(),
-                                code = failure.toFailureCode(),
-                                details = "sender transfer failed",
+            val notifyPeer = stateMutex.withLock {
+                val alreadyRemoteTerminal =
+                    stateValue == OutgoingTransferState.CANCELLED || stateValue == OutgoingTransferState.FAILED
+                if (!alreadyRemoteTerminal) stateValue = OutgoingTransferState.FAILED
+                !alreadyRemoteTerminal
+            }
+            if (notifyPeer) {
+                withContext(NonCancellable) {
+                    runCatching {
+                        crypto.messenger.send(
+                            DecodedPeerMessage.Failure(
+                                TransferFailure(
+                                    transferIdHash = transferIdHash(),
+                                    code = failure.toFailureCode(),
+                                    details = "sender transfer failed",
+                                ),
                             ),
-                        ),
-                    )
+                        )
+                    }
                 }
             }
             throw failure
         } finally {
             // TransferSender owns source.close() once DATA begins.
-            sourceClosed = true
+            sourceMutex.withLock { sourceClosed = true }
         }
     }
 
     suspend fun cancel(reason: String) {
-        if (stateValue == OutgoingTransferState.COMPLETE || stateValue == OutgoingTransferState.CANCELLED) return
-        if (stateValue != OutgoingTransferState.SENDING) closeSourceBestEffort()
-        networkSender.cancel(transferIdHash(), reason)
-        stateValue = OutgoingTransferState.CANCELLED
+        val previous = stateMutex.withLock {
+            if (stateValue == OutgoingTransferState.COMPLETE || stateValue == OutgoingTransferState.CANCELLED) {
+                return
+            }
+            val value = stateValue
+            stateValue = OutgoingTransferState.CANCELLED
+            value
+        }
+        if (previous != OutgoingTransferState.SENDING) closeSourceBestEffort()
+        signalingSender.cancel(transferIdHash(), reason)
     }
 
     suspend fun abandonBeforeSend() {
-        check(stateValue != OutgoingTransferState.SENDING && stateValue != OutgoingTransferState.COMPLETE) {
-            "Cannot abandon a transfer after DATA started"
+        stateMutex.withLock {
+            check(stateValue != OutgoingTransferState.SENDING && stateValue != OutgoingTransferState.COMPLETE) {
+                "Cannot abandon a transfer after DATA started"
+            }
+            if (
+                stateValue == OutgoingTransferState.NEW ||
+                stateValue == OutgoingTransferState.OFFERED ||
+                stateValue == OutgoingTransferState.ACCEPTED
+            ) {
+                stateValue = OutgoingTransferState.CANCELLED
+            }
         }
         closeSourceBestEffort()
-        if (stateValue == OutgoingTransferState.NEW || stateValue == OutgoingTransferState.OFFERED || stateValue == OutgoingTransferState.ACCEPTED) {
-            stateValue = OutgoingTransferState.CANCELLED
-        }
     }
 
     fun closeCrypto() {
         crypto.close()
     }
 
+    private suspend fun requireSendingState() {
+        val current = stateMutex.withLock { stateValue }
+        if (current != OutgoingTransferState.SENDING) {
+            throw CancellationException("Transfer is no longer in SENDING state: $current")
+        }
+    }
+
     private suspend fun closeSourceBestEffort() {
-        if (sourceClosed) return
-        sourceClosed = true
+        val shouldClose = sourceMutex.withLock {
+            if (sourceClosed) false else {
+                sourceClosed = true
+                true
+            }
+        }
+        if (!shouldClose) return
         withContext(NonCancellable) {
             runCatching { source.close() }
         }
@@ -242,7 +338,8 @@ suspend fun decodeIncomingTransferOffer(
  *
  * Vault import is impossible until all authenticated DATA chunks completed locally and a
  * coherent remote COMPLETE message was received. State is checked before DATA touches the
- * receiver so a peer cannot pre-buffer file content before local ACCEPT.
+ * receiver so a peer cannot pre-buffer file content before local ACCEPT. dispatch()/accept()
+ * are intended to be serialized by the owning session event loop.
  */
 class IncomingSharingTransfer(
     private val session: EstablishedPeerSession,
