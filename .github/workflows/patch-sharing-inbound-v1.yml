@@ -1,0 +1,68 @@
+name: Patch Sharing Inbound V1
+
+on:
+  push:
+    branches:
+      - ci/patch-sharing-inbound-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sharing-app-runtime
+          fetch-depth: 0
+      - name: Apply guarded inbound integration patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt')
+          s = p.read_text()
+          replacements = []
+
+          old = '''    private val mutableEvents = MutableSharedFlow<SharingRuntimeEvent>(extraBufferCapacity = 32)\n    override val events: SharedFlow<SharingRuntimeEvent> = mutableEvents.asSharedFlow()\n\n    private var collectorJob: Job? = null\n'''
+          new = '''    private val mutableEvents = MutableSharedFlow<SharingRuntimeEvent>(extraBufferCapacity = 32)\n    override val events: SharedFlow<SharingRuntimeEvent> = mutableEvents.asSharedFlow()\n    private val inbound = InboundSharingCoordinator(\n        signalingClient = signalingClient,\n        identities = identities,\n        presence = presence,\n        contacts = contacts,\n        handshake = handshake,\n        signer = signer,\n        keyAgreement = keyAgreement,\n        keyDeriver = keyDeriver,\n        cipher = cipher,\n        cryptoRandom = cryptoRandom,\n        idRandom = idRandom,\n        scope = scope,\n        signalingClient = signalingClient,\n        claimInbox = ::claimSessionInbox,\n        releaseInbox = ::releaseSessionInbox,\n        eventSink = { mutableEvents.emit(it) },\n        handshakeTimeoutMs = handshakeTimeoutMs,\n    )\n\n    private var collectorJob: Job? = null\n'''
+          replacements.append((old,new))
+
+          old = '''            stateMutex.withLock {\n                activeContext = contextId\n                activeVault = vault\n            }\n            SharingRuntimeActivation.Ready(registered.presence.referenceCode)\n'''
+          new = '''            stateMutex.withLock {\n                activeContext = contextId\n                activeVault = vault\n            }\n            inbound.activate(contextId, vault)\n            SharingRuntimeActivation.Ready(registered.presence.referenceCode)\n'''
+          replacements.append((old,new))
+
+          old = '''    override suspend fun acceptIncoming() {\n        throw UnsupportedOperationException("Inbound sharing runtime is not wired yet")\n    }\n\n    override suspend fun rejectIncoming() {\n        throw UnsupportedOperationException("Inbound sharing runtime is not wired yet")\n    }\n\n    override suspend fun cancelCurrent() {\n        val outgoing = stateMutex.withLock { currentOutgoing }\n        if (outgoing != null) runCatching { outgoing.cancel("local cancellation") }\n    }\n'''
+          new = '''    override suspend fun acceptIncoming() {\n        inbound.acceptIncoming()\n    }\n\n    override suspend fun rejectIncoming() {\n        inbound.rejectIncoming()\n    }\n\n    override suspend fun cancelCurrent() {\n        val outgoing = stateMutex.withLock { currentOutgoing }\n        if (outgoing != null) runCatching { outgoing.cancel("local cancellation") }\n        inbound.cancelCurrent()\n    }\n'''
+          replacements.append((old,new))
+
+          old = '''        runCatching { cancelCurrent() }\n        if (context != null) runCatching { lifecycle.deactivate(context) }\n        clearSessionInboxes()\n        runCatching { signalingClient.close() }\n'''
+          new = '''        runCatching { cancelCurrent() }\n        runCatching { inbound.deactivate() }\n        if (context != null) runCatching { lifecycle.deactivate(context) }\n        clearSessionInboxes()\n        runCatching { signalingClient.close() }\n'''
+          replacements.append((old,new))
+
+          old = '''        earlyRelays.clear()\n    }\n\n    private fun ensureCollector() {\n'''
+          new = '''        earlyRelays.clear()\n        inbound.close()\n    }\n\n    private fun ensureCollector() {\n'''
+          replacements.append((old,new))
+
+          old = '''    private suspend fun routeRelay(sessionId: SessionId, envelope: SignalingEnvelope) {\n        val channel = stateMutex.withLock {\n            sessionInboxes[sessionId.value]?.also { return@withLock it }\n\n            val currentTotal = totalEarlyRelaysLocked()\n            val existing = earlyRelays[sessionId.value]\n            if (existing != null) {\n                if (existing.size < MAX_EARLY_RELAYS_PER_SESSION && currentTotal < MAX_EARLY_RELAYS_TOTAL) {\n                    existing.addLast(envelope)\n                }\n            } else if (currentTotal < MAX_EARLY_RELAYS_TOTAL) {\n                earlyRelays[sessionId.value] = ArrayDeque<SignalingEnvelope>().apply { addLast(envelope) }\n            }\n            null\n        }\n        channel?.trySend(envelope)\n    }\n'''
+          new = '''    private suspend fun routeRelay(sessionId: SessionId, envelope: SignalingEnvelope) {\n        val alreadyClaimed = stateMutex.withLock { sessionInboxes[sessionId.value] }\n        if (alreadyClaimed != null) {\n            alreadyClaimed.trySend(envelope)\n            return\n        }\n\n        if (inbound.consumeHelloIfPresent(sessionId, envelope)) return\n\n        // Re-check after handshake classification: an outbound/inbound waiter may have\n        // claimed the session while the envelope was being authenticated/decoded.\n        val channel = stateMutex.withLock {\n            sessionInboxes[sessionId.value]?.also { return@withLock it }\n\n            val currentTotal = totalEarlyRelaysLocked()\n            val existing = earlyRelays[sessionId.value]\n            if (existing != null) {\n                if (existing.size < MAX_EARLY_RELAYS_PER_SESSION && currentTotal < MAX_EARLY_RELAYS_TOTAL) {\n                    existing.addLast(envelope)\n                }\n            } else if (currentTotal < MAX_EARLY_RELAYS_TOTAL) {\n                earlyRelays[sessionId.value] = ArrayDeque<SignalingEnvelope>().apply { addLast(envelope) }\n            }\n            null\n        }\n        channel?.trySend(envelope)\n    }\n'''
+          replacements.append((old,new))
+
+          for i,(old,new) in enumerate(replacements,1):
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'guarded replacement {i} expected 1 match, found {count}')
+              s = s.replace(old,new)
+          p.write_text(s)
+          PY
+          git diff --check
+          git diff -- shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt
+      - name: Commit and push PR5
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt
+          git commit -m "feat: wire trusted inbound sharing runtime"
+          git push origin HEAD:feature/sharing-app-runtime
