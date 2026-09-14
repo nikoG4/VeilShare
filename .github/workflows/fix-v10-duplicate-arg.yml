@@ -1,0 +1,33 @@
+name: Fix V10 Duplicate Arg
+on:
+  push:
+    branches: [ci/fix-v10-duplicate-arg]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply guarded fix to PR5 branch
+        shell: bash
+        run: |
+          git fetch origin feature/sharing-app-runtime
+          git checkout -B feature/sharing-app-runtime origin/feature/sharing-app-runtime
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt')
+          s = p.read_text()
+          needle = '''        idRandom = idRandom,\n        scope = scope,\n        signalingClient = signalingClient,\n        claimInbox = ::claimSessionInbox,\n'''
+          replacement = '''        idRandom = idRandom,\n        scope = scope,\n        claimInbox = ::claimSessionInbox,\n'''
+          if s.count(needle) != 1:
+              raise SystemExit(f'guard failed: expected 1 exact duplicate block, found {s.count(needle)}')
+          p.write_text(s.replace(needle, replacement))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt
+          git commit -m "fix: remove duplicate inbound signaling argument"
+          git push origin HEAD:feature/sharing-app-runtime
