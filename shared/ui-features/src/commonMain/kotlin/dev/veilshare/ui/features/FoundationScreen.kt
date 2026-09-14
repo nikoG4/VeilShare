@@ -358,7 +358,7 @@ private fun SenderCompletedScreen(controller: LocalAppController) {
             Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
             Text(stringResource(Res.string.share_complete_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_complete_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -377,7 +377,7 @@ private fun SenderErrorScreen(state: SharingSenderState.Error, controller: Local
                         Text(stringResource(Res.string.retry))
                     }
                 }
-                Button(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Button(onClick = { controller.finishSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                     Text(stringResource(Res.string.close))
                 }
             }
@@ -391,7 +391,7 @@ private fun SenderCancelledScreen(controller: LocalAppController) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text(stringResource(Res.string.share_cancelled_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_cancelled_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -443,19 +443,14 @@ private fun ReceiverIncomingScreen(state: SharingReceiverState.Incoming, control
             
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(
-                    onClick = { 
-                        // TODO: Implement reject
-                        controller.cancelSharing()
-                    },
+                    onClick = { controller.rejectIncomingSharing() },
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text(stringResource(Res.string.share_reject))
                 }
                 Button(
-                    onClick = { 
-                        // TODO: Implement accept
-                    },
+                    onClick = { controller.acceptIncomingSharing() },
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                 ) {
                     Text(stringResource(Res.string.share_accept))
@@ -509,7 +504,7 @@ private fun ReceiverCompletedScreen(controller: LocalAppController) {
             Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
             Text(stringResource(Res.string.share_complete_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_receive_complete_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -522,7 +517,7 @@ private fun ReceiverErrorScreen(state: SharingReceiverState.Error, controller: L
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(stringResource(Res.string.share_error_title), style = MaterialTheme.typography.headlineSmall)
             Text(state.message)
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.close))
             }
         }
@@ -535,7 +530,7 @@ private fun ReceiverRejectedScreen(controller: LocalAppController) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text(stringResource(Res.string.share_rejected_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_rejected_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -548,7 +543,7 @@ private fun ReceiverCancelledScreen(controller: LocalAppController) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text(stringResource(Res.string.share_cancelled_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_cancelled_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
