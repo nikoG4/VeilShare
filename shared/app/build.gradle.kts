@@ -10,12 +10,15 @@ kotlin {
             implementation(project(":shared:core-contacts"))
             implementation(project(":shared:core-transfer"))
             implementation(project(":shared:core-platform"))
+            implementation(project(":shared:core-secure-store"))
             implementation(project(":shared:core-vault"))
             implementation(project(":shared:ui-features"))
             implementation(project(":shared:ui-design"))
             implementation(libs.coroutines.core)
             implementation(compose.runtime)
         }
+        androidMain.dependencies { implementation(libs.ktor.client.cio) }
+        desktopMain.dependencies { implementation(libs.ktor.client.cio) }
         commonTest.dependencies { implementation(libs.kotlin.test); implementation(libs.coroutines.test) }
     }
 }
