@@ -1,0 +1,33 @@
+name: Sharing App Runtime Validation V5
+
+on:
+  push:
+    branches:
+      - ci/sharing-app-runtime-validation-v5
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+      - name: Core regression
+        run: ./gradlew :shared:core-model:desktopTest :shared:core-crypto:desktopTest :shared:core-secure-store:desktopTest :shared:core-identity:desktopTest :shared:core-contacts:desktopTest :shared:core-transfer:desktopTest :shared:core-vault:desktopTest --no-daemon --stacktrace
+      - name: Compile app runtime and UI Desktop
+        run: ./gradlew :shared:app:compileKotlinDesktop :shared:ui-features:compileKotlinDesktop :desktopApp:compileKotlin --no-daemon --stacktrace
+      - name: Compile app runtime and UI Android
+        run: ./gradlew :shared:app:compileDebugKotlinAndroid :shared:ui-features:compileDebugKotlinAndroid :androidApp:compileDebugKotlin --no-daemon --stacktrace
+      - name: Diff check
+        run: git diff --check HEAD~1..HEAD
