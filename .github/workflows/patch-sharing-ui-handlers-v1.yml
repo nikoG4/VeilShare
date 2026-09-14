@@ -1,0 +1,50 @@
+name: Patch Sharing UI Handlers V1
+
+on:
+  push:
+    branches:
+      - ci/patch-sharing-ui-handlers-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sharing-ui-polish
+          fetch-depth: 0
+      - name: Apply guarded sharing UI handler patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/FoundationScreen.kt')
+          s = p.read_text()
+          reps = [
+          ('''                OutlinedButton(\n                    onClick = { \n                        // TODO: Implement reject\n                        controller.cancelSharing()\n                    },\n                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),\n                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)\n                ) {\n                    Text(stringResource(Res.string.share_reject))\n                }\n                Button(\n                    onClick = { \n                        // TODO: Implement accept\n                    },\n                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)\n                ) {\n                    Text(stringResource(Res.string.share_accept))\n                }\n''', '''                OutlinedButton(\n                    onClick = { controller.rejectIncomingSharing() },\n                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),\n                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)\n                ) {\n                    Text(stringResource(Res.string.share_reject))\n                }\n                Button(\n                    onClick = { controller.acceptIncomingSharing() },\n                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)\n                ) {\n                    Text(stringResource(Res.string.share_accept))\n                }\n'''),
+          ('''            Text(stringResource(Res.string.share_complete_description))\n            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n''', '''            Text(stringResource(Res.string.share_complete_description))\n            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n'''),
+          ('''                Button(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {\n                    Text(stringResource(Res.string.close))\n                }\n''', '''                Button(onClick = { controller.finishSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {\n                    Text(stringResource(Res.string.close))\n                }\n'''),
+          ('''            Text(stringResource(Res.string.share_cancelled_description))\n            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n''', '''            Text(stringResource(Res.string.share_cancelled_description))\n            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n'''),
+          ('''            Text(stringResource(Res.string.share_receive_complete_description))\n            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n''', '''            Text(stringResource(Res.string.share_receive_complete_description))\n            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n'''),
+          ('''            Text(state.message)\n            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.close))\n            }\n''', '''            Text(state.message)\n            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.close))\n            }\n'''),
+          ('''            Text(stringResource(Res.string.share_rejected_description))\n            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n''', '''            Text(stringResource(Res.string.share_rejected_description))\n            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {\n                Text(stringResource(Res.string.done))\n            }\n'''),
+          ]
+          for i,(old,new) in enumerate(reps,1):
+              count=s.count(old)
+              if count != 1:
+                  raise SystemExit(f'replacement {i}: expected 1 match, found {count}')
+              s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          git diff --check
+          git diff -- shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/FoundationScreen.kt
+      - name: Commit and push PR6
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/FoundationScreen.kt
+          git commit -m "fix: wire sharing receiver and terminal actions"
+          git push origin HEAD:feature/sharing-ui-polish
