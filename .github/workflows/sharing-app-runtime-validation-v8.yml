@@ -1,0 +1,48 @@
+name: Sharing App Runtime Validation V8
+
+on:
+  push:
+    branches:
+      - ci/sharing-app-runtime-validation-v8
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - name: Compile shared app Desktop
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :shared:app:compileKotlinDesktop --no-daemon --stacktrace > /tmp/desktop.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            { grep -E "(^e: |error:|Unresolved reference|Cannot access|No matching|Could not resolve|FAILURE:|Exception is:)" /tmp/desktop.log || true; } | tail -n 250 > ci-compile-errors.txt
+            if [ ! -s ci-compile-errors.txt ]; then tail -n 250 /tmp/desktop.log > ci-compile-errors.txt; fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ci-compile-errors.txt
+            git commit -m "ci: capture desktop compile errors [skip ci]"
+            git push
+            exit "$code"
+          fi
+      - name: Compile Desktop app
+        run: ./gradlew :shared:ui-features:compileKotlinDesktop :desktopApp:compileKotlin --no-daemon --stacktrace
+      - name: Compile shared app Android
+        run: ./gradlew :shared:app:compileDebugKotlinAndroid --no-daemon --stacktrace
+      - name: Compile Android app
+        run: ./gradlew :shared:ui-features:compileDebugKotlinAndroid :androidApp:compileDebugKotlin --no-daemon --stacktrace
+      - name: Runtime-adjacent regression
+        run: ./gradlew :shared:core-secure-store:desktopTest :shared:core-identity:desktopTest :shared:core-contacts:desktopTest :shared:core-transfer:desktopTest :shared:core-vault:desktopTest --no-daemon --stacktrace
+      - name: Diff check
+        run: git diff --check HEAD~1..HEAD
