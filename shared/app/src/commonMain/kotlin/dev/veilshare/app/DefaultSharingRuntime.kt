@@ -127,7 +127,6 @@ class DefaultSharingRuntime(
         cryptoRandom = cryptoRandom,
         idRandom = idRandom,
         scope = scope,
-        signalingClient = signalingClient,
         claimInbox = ::claimSessionInbox,
         releaseInbox = ::releaseSessionInbox,
         eventSink = { mutableEvents.emit(it) },
