@@ -10,22 +10,35 @@ import dev.veilshare.app.AppRoot
 import dev.veilshare.core.vault.*
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalFilePicker
+import dev.veilshare.ui.features.SharingFilePicker
+import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.VaultFileOpener
 import java.awt.Desktop
 import java.awt.Dimension
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardOpenOption
 import java.util.Comparator
 import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
 import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 
 fun main() = application {
     val dataRoot = desktopDataRoot().also(Files::createDirectories)
     val tempCache = DesktopOwnedPlaintextCache(Paths.get(System.getProperty("java.io.tmpdir"), "vs-open-4f16a9"))
-    val environment = AppEnvironment(DesktopLocalVaultService(dataRoot), DesktopPicker(), DesktopOpener(tempCache))
+    val picker = DesktopPicker()
+    val environment = AppEnvironment(
+        vaults = DesktopLocalVaultService(dataRoot),
+        picker = picker,
+        opener = DesktopOpener(tempCache),
+        sharingFilePicker = picker,
+    )
     Window(onCloseRequest = ::exitApplication, title = "Archivos", state = androidx.compose.ui.window.rememberWindowState(width = 1100.dp, height = 760.dp)) {
         LaunchedEffect(Unit) { window.minimumSize = Dimension(720, 520) }
         BoxWithConstraints {
@@ -35,13 +48,49 @@ fun main() = application {
     }
 }
 
-internal class DesktopPicker : LocalFilePicker {
-    override suspend fun pick(): ImportSource? = suspendCancellableCoroutine { continuation ->
+internal class DesktopPicker : LocalFilePicker, SharingFilePicker {
+    override suspend fun pick(): ImportSource? = selectPath()?.let(::DesktopImportSource)
+
+    override suspend fun pickFile(): SharingPickedFile? = selectPath()?.let(::DesktopSharingPickedFile)
+
+    private suspend fun selectPath(): Path? = suspendCancellableCoroutine { continuation ->
         SwingUtilities.invokeLater {
             val chooser = JFileChooser().apply { isMultiSelectionEnabled = false; fileSelectionMode = JFileChooser.FILES_ONLY }
             val selected = if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile?.toPath() else null
-            if (continuation.isActive) continuation.resume(selected?.let(::DesktopImportSource))
+            if (continuation.isActive) continuation.resume(selected)
         }
+    }
+}
+
+internal class DesktopSharingPickedFile(private val path: Path) : SharingPickedFile {
+    private val channel = FileChannel.open(path, StandardOpenOption.READ)
+    override val displayName: String = path.fileName?.toString()?.takeIf(String::isNotBlank) ?: "archivo"
+    override val size: Long = Files.size(path).also { require(it > 0) { "Empty files are not supported by Sharing V1" } }
+    override val mimeType: String? = runCatching { Files.probeContentType(path) }.getOrNull()
+    private var closed = false
+
+    override suspend fun readChunk(offset: Long, size: Int): ByteArray = withContext(Dispatchers.IO) {
+        check(!closed) { "Sharing file is closed" }
+        require(offset >= 0 && offset <= this@DesktopSharingPickedFile.size) { "Invalid sharing read offset" }
+        require(size > 0) { "Sharing read size must be positive" }
+        if (offset == this@DesktopSharingPickedFile.size) return@withContext ByteArray(0)
+
+        val requested = minOf(size.toLong(), this@DesktopSharingPickedFile.size - offset).toInt()
+        val buffer = ByteBuffer.allocate(requested)
+        var position = offset
+        while (buffer.hasRemaining()) {
+            val count = channel.read(buffer, position)
+            if (count < 0) error("Selected file ended before its declared size")
+            if (count == 0) continue
+            position += count
+        }
+        buffer.array()
+    }
+
+    override suspend fun close() = withContext(Dispatchers.IO) {
+        if (closed) return@withContext
+        closed = true
+        channel.close()
     }
 }
 
