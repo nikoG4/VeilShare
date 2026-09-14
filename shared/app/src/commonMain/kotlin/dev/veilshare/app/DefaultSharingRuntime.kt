@@ -114,6 +114,25 @@ class DefaultSharingRuntime(
     private val earlyRelays = linkedMapOf<String, ArrayDeque<SignalingEnvelope>>()
     private val mutableEvents = MutableSharedFlow<SharingRuntimeEvent>(extraBufferCapacity = 32)
     override val events: SharedFlow<SharingRuntimeEvent> = mutableEvents.asSharedFlow()
+    private val inbound = InboundSharingCoordinator(
+        signalingClient = signalingClient,
+        identities = identities,
+        presence = presence,
+        contacts = contacts,
+        handshake = handshake,
+        signer = signer,
+        keyAgreement = keyAgreement,
+        keyDeriver = keyDeriver,
+        cipher = cipher,
+        cryptoRandom = cryptoRandom,
+        idRandom = idRandom,
+        scope = scope,
+        signalingClient = signalingClient,
+        claimInbox = ::claimSessionInbox,
+        releaseInbox = ::releaseSessionInbox,
+        eventSink = { mutableEvents.emit(it) },
+        handshakeTimeoutMs = handshakeTimeoutMs,
+    )
 
     private var collectorJob: Job? = null
     private var activeContext: SharingContextId? = null
@@ -138,6 +157,7 @@ class DefaultSharingRuntime(
                 activeContext = contextId
                 activeVault = vault
             }
+            inbound.activate(contextId, vault)
             SharingRuntimeActivation.Ready(registered.presence.referenceCode)
         } catch (_: Throwable) {
             stateMutex.withLock {
@@ -311,16 +331,17 @@ class DefaultSharingRuntime(
     }
 
     override suspend fun acceptIncoming() {
-        throw UnsupportedOperationException("Inbound sharing runtime is not wired yet")
+        inbound.acceptIncoming()
     }
 
     override suspend fun rejectIncoming() {
-        throw UnsupportedOperationException("Inbound sharing runtime is not wired yet")
+        inbound.rejectIncoming()
     }
 
     override suspend fun cancelCurrent() {
         val outgoing = stateMutex.withLock { currentOutgoing }
         if (outgoing != null) runCatching { outgoing.cancel("local cancellation") }
+        inbound.cancelCurrent()
     }
 
     override suspend fun deactivate() {
@@ -331,6 +352,7 @@ class DefaultSharingRuntime(
             value
         }
         runCatching { cancelCurrent() }
+        runCatching { inbound.deactivate() }
         if (context != null) runCatching { lifecycle.deactivate(context) }
         clearSessionInboxes()
         runCatching { signalingClient.close() }
@@ -344,6 +366,7 @@ class DefaultSharingRuntime(
         sessionInboxes.values.forEach { it.close() }
         sessionInboxes.clear()
         earlyRelays.clear()
+        inbound.close()
     }
 
     private fun ensureCollector() {
@@ -358,6 +381,16 @@ class DefaultSharingRuntime(
     }
 
     private suspend fun routeRelay(sessionId: SessionId, envelope: SignalingEnvelope) {
+        val alreadyClaimed = stateMutex.withLock { sessionInboxes[sessionId.value] }
+        if (alreadyClaimed != null) {
+            alreadyClaimed.trySend(envelope)
+            return
+        }
+
+        if (inbound.consumeHelloIfPresent(sessionId, envelope)) return
+
+        // Re-check after handshake classification: an outbound/inbound waiter may have
+        // claimed the session while the envelope was being authenticated/decoded.
         val channel = stateMutex.withLock {
             sessionInboxes[sessionId.value]?.also { return@withLock it }
 
