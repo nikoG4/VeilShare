@@ -1,0 +1,7 @@
+e: file:///home/runner/work/VeilShare/VeilShare/shared/app/build.gradle.kts:21:9: Unresolved reference: desktopMain
+e: file:///home/runner/work/VeilShare/VeilShare/shared/app/build.gradle.kts:21:36: Unresolved reference. None of the following candidates is applicable because of receiver type mismatch: 
+FAILURE: Build failed with an exception.
+                   ^ Unresolved reference: desktopMain
+                                              ^ Unresolved reference. None of the following candidates is applicable because of receiver type mismatch: 
+* Exception is:
+ScriptCompilationException(scriptCompilationErrors=[ScriptCompilationError(message=Unresolved reference: desktopMain, location=/home/runner/.gradle/.tmp/gradle-kotlin-dsl-11547618264378508745.tmp/build.gradle.kts (21:9)), ScriptCompilationError(message=Unresolved reference. None of the following candidates is applicable because of receiver type mismatch: 
