@@ -1,0 +1,42 @@
+name: Patch Inbound Mechanical V1
+
+on:
+  push:
+    branches:
+      - ci/patch-inbound-mechanical-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sharing-app-runtime
+          fetch-depth: 0
+      - name: Apply guarded mechanical fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('shared/app/src/commonMain/kotlin/dev/veilshare/app/InboundSharingCoordinator.kt')
+          s=p.read_text()
+          old='''internal class InboundSharingCoordinator(\n    signalingClient: SignalingClient,\n    identities: SharingIdentityManager,'''
+          new='''internal class InboundSharingCoordinator(\n    identities: SharingIdentityManager,'''
+          if s.count(old) != 1: raise SystemExit('duplicate signaling constructor guard failed')
+          s=s.replace(old,new)
+          old='''        val snapshot = mutex.withLock {\n            activeContext = activeContext // explicit: cancellation does not deactivate presence\n            current\n        }'''
+          new='''        val snapshot = mutex.withLock { current }'''
+          if s.count(old) != 1: raise SystemExit('cancel no-op guard failed')
+          s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Commit and push PR5
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/app/src/commonMain/kotlin/dev/veilshare/app/InboundSharingCoordinator.kt
+          git commit -m "fix: clean inbound runtime constructor"
+          git push origin HEAD:feature/sharing-app-runtime
