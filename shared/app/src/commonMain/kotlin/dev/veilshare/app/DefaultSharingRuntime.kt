@@ -22,14 +22,17 @@ import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.platform.SignalingClient
 import dev.veilshare.core.transfer.DefaultTransferSender
+import dev.veilshare.core.transfer.EstablishedPeerSession
 import dev.veilshare.core.transfer.EstablishedSessionSide
 import dev.veilshare.core.transfer.EstablishedTransferCrypto
 import dev.veilshare.core.transfer.HandshakeSignalingInbox
 import dev.veilshare.core.transfer.OutgoingControlResult
-import dev.veilshare.core.transfer.OutboundSessionStartResult
 import dev.veilshare.core.transfer.OutgoingSharingTransfer
+import dev.veilshare.core.transfer.OutgoingTransferState
+import dev.veilshare.core.transfer.OutboundSessionStartResult
 import dev.veilshare.core.transfer.SharingPresenceLifecycle
 import dev.veilshare.core.transfer.TransferProtocol
+import dev.veilshare.core.transfer.TransferResult
 import dev.veilshare.core.transfer.TransferSender
 import dev.veilshare.core.transfer.TransferSource
 import dev.veilshare.core.transfer.TrustedOutboundHandshakeCompleter
@@ -41,16 +44,19 @@ import dev.veilshare.ui.features.SharingRuntime
 import dev.veilshare.ui.features.SharingRuntimeActivation
 import dev.veilshare.ui.features.SharingRuntimeEvent
 import dev.veilshare.ui.features.SharingSendResult
-import dev.veilshare.ui.features.SharingFilePickerResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -103,6 +109,7 @@ class DefaultSharingRuntime(
     private val handshakeInbox = HandshakeSignalingInbox()
 
     private val stateMutex = Mutex()
+    private val sendMutex = Mutex()
     private val sessionInboxes = mutableMapOf<String, Channel<SignalingEnvelope>>()
     private val earlyRelays = linkedMapOf<String, ArrayDeque<SignalingEnvelope>>()
     private val mutableEvents = MutableSharedFlow<SharingRuntimeEvent>(extraBufferCapacity = 32)
@@ -146,11 +153,20 @@ class DefaultSharingRuntime(
         referenceCode: ReferenceCode,
         file: SharingPickedFile,
         onProgress: suspend (SharingProgress) -> Unit,
+    ): SharingSendResult = sendMutex.withLock {
+        sendLocked(referenceCode, file, onProgress)
+    }
+
+    private suspend fun sendLocked(
+        referenceCode: ReferenceCode,
+        file: SharingPickedFile,
+        onProgress: suspend (SharingProgress) -> Unit,
     ): SharingSendResult {
         var transferOwnsFile = false
         var channel: Channel<SignalingEnvelope>? = null
-        var session: dev.veilshare.core.transfer.EstablishedPeerSession? = null
+        var session: EstablishedPeerSession? = null
         var transferCrypto: EstablishedTransferCrypto? = null
+        var outgoingTransfer: OutgoingSharingTransfer? = null
         try {
             val contextId = stateMutex.withLock { activeContext }
                 ?: return SharingSendResult.Unavailable("Compartir no está activo.")
@@ -195,6 +211,7 @@ class DefaultSharingRuntime(
                 crypto = transferCrypto,
                 sender = transferSender,
             )
+            outgoingTransfer = outgoing
             transferOwnsFile = true
             stateMutex.withLock { currentOutgoing = outgoing }
             outgoing.sendOffer()
@@ -214,7 +231,18 @@ class DefaultSharingRuntime(
 
             when (control) {
                 OutgoingControlResult.Accepted -> {
-                    val result = outgoing.sendAccepted()
+                    val result = try {
+                        sendAcceptedWithRemoteControl(outgoing, channel)
+                    } catch (cancelled: CancellationException) {
+                        if (!currentCoroutineContext().isActive) throw cancelled
+                        when (outgoing.state) {
+                            OutgoingTransferState.CANCELLED ->
+                                return SharingSendResult.Failed("El destinatario canceló la transferencia.")
+                            OutgoingTransferState.FAILED ->
+                                return SharingSendResult.Failed("La transferencia remota falló.")
+                            else -> throw cancelled
+                        }
+                    }
                     onProgress(
                         SharingProgress(
                             bytesTransferred = result.totalBytes,
@@ -238,12 +266,11 @@ class DefaultSharingRuntime(
         } catch (_: Throwable) {
             return SharingSendResult.Failed("No se pudo completar la transferencia.")
         } finally {
-            val outgoing = stateMutex.withLock {
-                val value = currentOutgoing
-                currentOutgoing = null
-                value
+            val outgoing = outgoingTransfer
+            stateMutex.withLock {
+                if (currentOutgoing === outgoing) currentOutgoing = null
             }
-            if (outgoing != null && outgoing.state != dev.veilshare.core.transfer.OutgoingTransferState.COMPLETE) {
+            if (outgoing != null && outgoing.state != OutgoingTransferState.COMPLETE) {
                 withContext(NonCancellable) { runCatching { outgoing.abandonBeforeSend() } }
             }
             transferCrypto?.close()
@@ -252,6 +279,34 @@ class DefaultSharingRuntime(
             if (!transferOwnsFile) {
                 withContext(NonCancellable) { runCatching { file.close() } }
             }
+        }
+    }
+
+    /**
+     * DATA sending and post-ACCEPT control reception must run concurrently. PR #3's
+     * state-aware sender stops at the next DATA/COMPLETE boundary only after
+     * OutgoingSharingTransfer.handleControl observes remote CANCEL/FAILURE.
+     */
+    private suspend fun sendAcceptedWithRemoteControl(
+        outgoing: OutgoingSharingTransfer,
+        channel: Channel<SignalingEnvelope>,
+    ): TransferResult = coroutineScope {
+        val controlJob = launch {
+            while (true) {
+                when (outgoing.handleControl(channel.receive())) {
+                    is OutgoingControlResult.RemoteCancel,
+                    is OutgoingControlResult.RemoteFailure -> return@launch
+                    is OutgoingControlResult.Ignored -> Unit
+                    OutgoingControlResult.Accepted,
+                    is OutgoingControlResult.Rejected ->
+                        throw IllegalStateException("Unexpected terminal OFFER response after ACCEPT")
+                }
+            }
+        }
+        try {
+            outgoing.sendAccepted()
+        } finally {
+            controlJob.cancelAndJoin()
         }
     }
 
@@ -305,9 +360,15 @@ class DefaultSharingRuntime(
     private suspend fun routeRelay(sessionId: SessionId, envelope: SignalingEnvelope) {
         val channel = stateMutex.withLock {
             sessionInboxes[sessionId.value]?.also { return@withLock it }
-            val queue = earlyRelays.getOrPut(sessionId.value) { ArrayDeque() }
-            if (queue.size < MAX_EARLY_RELAYS_PER_SESSION && totalEarlyRelaysLocked() < MAX_EARLY_RELAYS_TOTAL) {
-                queue.addLast(envelope)
+
+            val currentTotal = totalEarlyRelaysLocked()
+            val existing = earlyRelays[sessionId.value]
+            if (existing != null) {
+                if (existing.size < MAX_EARLY_RELAYS_PER_SESSION && currentTotal < MAX_EARLY_RELAYS_TOTAL) {
+                    existing.addLast(envelope)
+                }
+            } else if (currentTotal < MAX_EARLY_RELAYS_TOTAL) {
+                earlyRelays[sessionId.value] = ArrayDeque<SignalingEnvelope>().apply { addLast(envelope) }
             }
             null
         }
