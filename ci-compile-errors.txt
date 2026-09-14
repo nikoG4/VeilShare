@@ -1,0 +1,6 @@
+e: file:///home/runner/work/VeilShare/VeilShare/shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt:130:9 Argument already passed for this parameter.
+e: file:///home/runner/work/VeilShare/VeilShare/shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt:134:9 No value passed for parameter 'signalingClient'.
+e: file:///home/runner/work/VeilShare/VeilShare/shared/app/src/commonMain/kotlin/dev/veilshare/app/InboundSharingCoordinator.kt:54:5 Conflicting declarations:
+e: file:///home/runner/work/VeilShare/VeilShare/shared/app/src/commonMain/kotlin/dev/veilshare/app/InboundSharingCoordinator.kt:66:17 Conflicting declarations:
+FAILURE: Build failed with an exception.
+* Exception is:
