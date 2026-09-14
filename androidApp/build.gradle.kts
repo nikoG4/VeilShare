@@ -5,11 +5,29 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+val sharingSignalingUrlLiteral = providers.gradleProperty("veilshare.signalingUrl")
+    .orElse("")
+    .get()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .let { "\"$it\"" }
+
 android {
     namespace = "dev.veilshare.android"
     compileSdk = 36
-    defaultConfig { applicationId = "dev.veilshare.android"; minSdk = 23; targetSdk = 36; versionCode = 1; versionName = "0.1.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
-    buildFeatures { compose = true }
+    defaultConfig {
+        applicationId = "dev.veilshare.android"
+        minSdk = 23
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "SHARING_SIGNALING_URL", sharingSignalingUrlLiteral)
+    }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     packaging { resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF" }
     buildTypes {
         release {

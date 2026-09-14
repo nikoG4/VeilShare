@@ -16,11 +16,13 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.veilshare.app.AppEnvironment
 import dev.veilshare.app.AppRoot
+import dev.veilshare.app.createAndroidSharingRuntime
 import dev.veilshare.core.vault.*
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
+import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import java.io.File
 import java.io.InputStream
@@ -40,11 +42,17 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         picker = AndroidDocumentPicker(this)
         val openCache = AndroidOwnedPlaintextCache(File(cacheDir, "open-4f16a9"))
+        val endpoint = BuildConfig.SHARING_SIGNALING_URL.trim().takeIf(String::isNotEmpty)
+            ?: if (BuildConfig.DEBUG) "ws://10.0.2.2:8080/v1/ws" else null
+        val sharingRuntime = endpoint?.let { url ->
+            runCatching { createAndroidSharingRuntime(this, url) }.getOrElse { UnavailableSharingRuntime }
+        } ?: UnavailableSharingRuntime
         val environment = AppEnvironment(
             vaults = AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)),
             picker = picker,
             opener = AndroidFileOpener(this, openCache),
             sharingFilePicker = picker,
+            sharingRuntime = sharingRuntime,
             lockSignals = lockSignals,
         )
         setContent {

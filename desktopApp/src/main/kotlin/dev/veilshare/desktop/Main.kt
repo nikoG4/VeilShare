@@ -7,11 +7,13 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import dev.veilshare.app.AppEnvironment
 import dev.veilshare.app.AppRoot
+import dev.veilshare.app.createDesktopSharingRuntime
 import dev.veilshare.core.vault.*
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
+import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import java.awt.Desktop
 import java.awt.Dimension
@@ -33,11 +35,18 @@ fun main() = application {
     val dataRoot = desktopDataRoot().also(Files::createDirectories)
     val tempCache = DesktopOwnedPlaintextCache(Paths.get(System.getProperty("java.io.tmpdir"), "vs-open-4f16a9"))
     val picker = DesktopPicker()
+    val signalingEndpoint = System.getenv("VEILSHARE_SIGNALING_URL")?.trim()?.takeIf(String::isNotEmpty)
+        ?: System.getProperty("veilshare.signalingUrl")?.trim()?.takeIf(String::isNotEmpty)
+        ?: "ws://127.0.0.1:8080/v1/ws"
+    val sharingRuntime = runCatching {
+        createDesktopSharingRuntime(dataRoot.resolve("sharing-state"), signalingEndpoint)
+    }.getOrElse { UnavailableSharingRuntime }
     val environment = AppEnvironment(
         vaults = DesktopLocalVaultService(dataRoot),
         picker = picker,
         opener = DesktopOpener(tempCache),
         sharingFilePicker = picker,
+        sharingRuntime = sharingRuntime,
     )
     Window(onCloseRequest = ::exitApplication, title = "Archivos", state = androidx.compose.ui.window.rememberWindowState(width = 1100.dp, height = 760.dp)) {
         LaunchedEffect(Unit) { window.minimumSize = Dimension(720, 520) }
