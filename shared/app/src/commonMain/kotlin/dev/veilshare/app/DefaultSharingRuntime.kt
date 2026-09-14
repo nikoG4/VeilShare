@@ -25,7 +25,7 @@ import dev.veilshare.core.transfer.DefaultTransferSender
 import dev.veilshare.core.transfer.EstablishedSessionSide
 import dev.veilshare.core.transfer.EstablishedTransferCrypto
 import dev.veilshare.core.transfer.HandshakeSignalingInbox
-import dev.veilshare.core.transfer.OutboundControlResult
+import dev.veilshare.core.transfer.OutgoingControlResult
 import dev.veilshare.core.transfer.OutboundSessionStartResult
 import dev.veilshare.core.transfer.OutgoingSharingTransfer
 import dev.veilshare.core.transfer.SharingPresenceLifecycle
@@ -41,6 +41,7 @@ import dev.veilshare.ui.features.SharingRuntime
 import dev.veilshare.ui.features.SharingRuntimeActivation
 import dev.veilshare.ui.features.SharingRuntimeEvent
 import dev.veilshare.ui.features.SharingSendResult
+import dev.veilshare.ui.features.SharingFilePickerResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
