@@ -39,8 +39,10 @@ class MainActivity : ComponentActivity() {
         picker = AndroidDocumentPicker(this)
         val openCache = AndroidOwnedPlaintextCache(File(cacheDir, "open-4f16a9"))
         val environment = AppEnvironment(
-            AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)), picker,
-            AndroidFileOpener(this, openCache), lockSignals,
+            vaults = AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)),
+            picker = picker,
+            opener = AndroidFileOpener(this, openCache),
+            lockSignals = lockSignals,
         )
         setContent {
             BoxWithConstraints {
