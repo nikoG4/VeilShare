@@ -26,7 +26,7 @@ import kotlin.test.assertNotNull
 
 class AndroidPersistentSharingStateE2ETest {
     @Test
-    fun `identity presence and contacts survive Android process-style restart`() = runTest {
+    fun identityPresenceAndContactsSurviveAndroidProcessStyleRestart() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val suffix = System.nanoTime().toString()
         val directoryName = "sharing-state-e2e-$suffix"
