@@ -51,7 +51,6 @@ import kotlinx.coroutines.withTimeout
  * exposed outside this class.
  */
 internal class InboundSharingCoordinator(
-    signalingClient: SignalingClient,
     identities: SharingIdentityManager,
     presence: SharingPresenceManager,
     private val contacts: TrustedContactManager,
@@ -332,10 +331,7 @@ internal class InboundSharingCoordinator(
     }
 
     suspend fun cancelCurrent() {
-        val snapshot = mutex.withLock {
-            activeContext = activeContext // explicit: cancellation does not deactivate presence
-            current
-        }
+        val snapshot = mutex.withLock { current }
         if (snapshot != null) {
             runCatching { snapshot.transfer.cancel("local cancellation") }
             finish(snapshot)
