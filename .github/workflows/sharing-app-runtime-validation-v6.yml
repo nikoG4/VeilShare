@@ -1,0 +1,45 @@
+name: Sharing App Runtime Validation V6
+
+on:
+  push:
+    branches:
+      - ci/sharing-app-runtime-validation-v6
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - name: Compile shared app Desktop
+        run: ./gradlew :shared:app:compileKotlinDesktop --no-daemon --stacktrace
+      - name: Compile Desktop app
+        run: ./gradlew :shared:ui-features:compileKotlinDesktop :desktopApp:compileKotlin --no-daemon --stacktrace
+      - name: Compile shared app Android
+        run: ./gradlew :shared:app:compileDebugKotlinAndroid --no-daemon --stacktrace
+      - name: Compile Android app
+        run: ./gradlew :shared:ui-features:compileDebugKotlinAndroid :androidApp:compileDebugKotlin --no-daemon --stacktrace
+      - name: Core model
+        run: ./gradlew :shared:core-model:desktopTest --no-daemon --stacktrace
+      - name: Core crypto
+        run: ./gradlew :shared:core-crypto:desktopTest --no-daemon --stacktrace
+      - name: Core secure store
+        run: ./gradlew :shared:core-secure-store:desktopTest --no-daemon --stacktrace
+      - name: Core identity
+        run: ./gradlew :shared:core-identity:desktopTest --no-daemon --stacktrace
+      - name: Core contacts
+        run: ./gradlew :shared:core-contacts:desktopTest --no-daemon --stacktrace
+      - name: Core transfer
+        run: ./gradlew :shared:core-transfer:desktopTest --no-daemon --stacktrace
+      - name: Core vault
+        run: ./gradlew :shared:core-vault:desktopTest --no-daemon --stacktrace
+      - name: Diff check
+        run: git diff --check HEAD~1..HEAD
