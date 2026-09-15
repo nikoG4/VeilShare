@@ -35,12 +35,21 @@ fun main() = application {
     val dataRoot = desktopDataRoot().also(Files::createDirectories)
     val tempCache = DesktopOwnedPlaintextCache(Paths.get(System.getProperty("java.io.tmpdir"), "vs-open-4f16a9"))
     val picker = DesktopPicker()
+    val allowInsecureLoopback = System.getenv("VEILSHARE_ALLOW_INSECURE_LOOPBACK")?.toBooleanStrictOrNull()
+        ?: System.getProperty("veilshare.allowInsecureLoopback")?.toBooleanStrictOrNull()
+        ?: false
     val signalingEndpoint = System.getenv("VEILSHARE_SIGNALING_URL")?.trim()?.takeIf(String::isNotEmpty)
         ?: System.getProperty("veilshare.signalingUrl")?.trim()?.takeIf(String::isNotEmpty)
-        ?: "ws://127.0.0.1:8080/v1/ws"
-    val sharingRuntime = runCatching {
-        createDesktopSharingRuntime(dataRoot.resolve("sharing-state"), signalingEndpoint)
-    }.getOrElse { UnavailableSharingRuntime }
+        ?: if (allowInsecureLoopback) "ws://127.0.0.1:8080/v1/ws" else null
+    val sharingRuntime = signalingEndpoint?.let { endpoint ->
+        runCatching {
+            createDesktopSharingRuntime(
+                stateRoot = dataRoot.resolve("sharing-state"),
+                endpointUrl = endpoint,
+                allowInsecureLoopback = allowInsecureLoopback,
+            )
+        }.getOrElse { UnavailableSharingRuntime }
+    } ?: UnavailableSharingRuntime
     val environment = AppEnvironment(
         vaults = DesktopLocalVaultService(dataRoot),
         picker = picker,
