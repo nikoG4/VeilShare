@@ -20,16 +20,15 @@ import kotlinx.coroutines.SupervisorJob
 fun createDesktopSharingRuntime(
     stateRoot: Path,
     endpointUrl: String,
+    allowInsecureLoopback: Boolean = false,
 ): SharingRuntime {
-    require(endpointUrl.startsWith("ws://") || endpointUrl.startsWith("wss://")) {
-        "Sharing signaling endpoint must use ws:// or wss://"
-    }
+    val validatedEndpoint = validateSignalingEndpoint(endpointUrl, allowInsecureLoopback)
     val cryptoRandom = JvmSecureRandom()
     val idRandom = SecureRandomIdSource(cryptoRandom)
     val cipher = JvmChaCha20Poly1305Cipher(cryptoRandom)
     val httpClient = HttpClient(CIO) { install(WebSockets) }
     val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val signaling = KtorSignalingClient(httpClient, endpointUrl, idRandom)
+    val signaling = KtorSignalingClient(httpClient, validatedEndpoint, idRandom)
     val runtime = try {
         composeDefaultSharingRuntime(
             protectedStateStore = DesktopSecureStateFactory.windows(stateRoot),
