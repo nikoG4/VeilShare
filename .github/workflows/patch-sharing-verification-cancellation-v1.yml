@@ -1,0 +1,28 @@
+name: Patch Sharing Verification Cancellation V1
+
+on:
+  push:
+    branches:
+      - ci/patch-sharing-verification-cancellation-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sharing-ui-polish
+          fetch-depth: 0
+      - run: |
+          git show origin/ci/patch-sharing-verification-cancellation-v1:.github/scripts/patch-sharing-verification-cancellation-v1.py > /tmp/patch-sharing-verification-cancellation-v1.py
+          python /tmp/patch-sharing-verification-cancellation-v1.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/LocalAppController.kt
+          git diff --cached --check
+          git commit -m "fix: preserve sharing verification cancellation"
+          git push origin HEAD:feature/sharing-ui-polish
