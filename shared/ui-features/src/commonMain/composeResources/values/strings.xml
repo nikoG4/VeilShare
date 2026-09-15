@@ -51,6 +51,11 @@
     <string name="share_title">Compartir</string>
     <string name="share_sender_title">Enviar archivo</string>
     <string name="share_receive">Recibir archivo</string>
+    <string name="share_verify_contact">Verificar contacto</string>
+    <string name="share_verify_contact_description">Comprueba un contacto por su código antes de enviar o recibir archivos. El código sólo localiza el dispositivo; debes comparar el fingerprint por otro canal.</string>
+    <string name="share_check_identity">Comprobar</string>
+    <string name="share_contact_verified_title">Contacto verificado</string>
+    <string name="share_contact_verified_description">%1$s quedó guardado como contacto de confianza para este espacio.</string>
     <string name="share_sender_description">Selecciona un archivo e ingresa el código de referencia del destinatario.</string>
     <string name="share_select_file">Archivo a enviar</string>
     <string name="share_browse">Examinar…</string>

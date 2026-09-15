@@ -36,6 +36,7 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
                 is RootState.Fatal -> ErrorScreen(value.message)
                 is RootState.SharingSender -> SenderScreen(value.state, controller)
                 is RootState.SharingReceiver -> ReceiverScreen(value.state, controller)
+                is RootState.SharingContactVerification -> ContactVerificationScreen(value.state, controller)
             }
         }
     }
@@ -142,10 +143,18 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
                     modifier = Modifier.weight(1f).testTag("share_send_action"),
                 ) { Text(stringResource(Res.string.share_sender_title)) }
             }
+            OutlinedButton(
+                onClick = controller::startContactVerification,
+                modifier = Modifier.fillMaxWidth().testTag("share_verify_contact_action"),
+            ) { Text(stringResource(Res.string.share_verify_contact)) }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(createFolder) { Text(stringResource(Res.string.new_folder)) }
                 Button(controller::importFile, Modifier.testTag("import_action")) { Text(stringResource(Res.string.import_file)) }
+                OutlinedButton(
+                    onClick = controller::startContactVerification,
+                    modifier = Modifier.testTag("share_verify_contact_action"),
+                ) { Text(stringResource(Res.string.share_verify_contact)) }
                 OutlinedButton(
                     onClick = controller::startSharingReceiver,
                     modifier = Modifier.testTag("share_receive_action"),
@@ -316,6 +325,71 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
                 ) {
                     Text(stringResource(Res.string.share_send))
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContactVerificationScreen(state: SharingContactVerificationState, controller: LocalAppController) {
+    when (state) {
+        is SharingContactVerificationState.Entering -> ElevatedCard(Modifier.widthIn(max = 520.dp).testTag("share_contact_verification_entry")) {
+            Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(Res.string.share_verify_contact), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(Res.string.share_verify_contact_description))
+                OutlinedTextField(
+                    value = state.referenceCode,
+                    onValueChange = controller::enterContactVerificationReferenceCode,
+                    enabled = !state.busy,
+                    singleLine = true,
+                    label = { Text(stringResource(Res.string.share_reference_code)) },
+                    supportingText = { Text(stringResource(Res.string.share_reference_is_not_identity)) },
+                    modifier = Modifier.fillMaxWidth().testTag("share_contact_verification_code"),
+                )
+                state.error?.let { InlineError(it) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = controller::finishContactVerification, enabled = !state.busy, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(stringResource(Res.string.back)) }
+                    Button(onClick = controller::lookupContactForVerification, enabled = !state.busy && state.referenceCode.isNotBlank(), modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("share_contact_verification_lookup")) {
+                        if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(Res.string.share_check_identity))
+                    }
+                }
+            }
+        }
+        is SharingContactVerificationState.VerificationRequired -> {
+            var alias by remember(state.fingerprint) { mutableStateOf(state.existingAlias.orEmpty()) }
+            val isNew = state.reason == SharingVerificationReason.NEW_PEER
+            ElevatedCard(Modifier.widthIn(max = 560.dp).testTag("share_contact_verification_fingerprint")) {
+                Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                    Text(stringResource(Res.string.share_verify_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(if (isNew) Res.string.share_verify_new_description else Res.string.share_verify_changed_description), color = if (isNew) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+                    Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(stringResource(Res.string.share_fingerprint), style = MaterialTheme.typography.labelLarge)
+                            Text(formatFingerprint(state.fingerprint), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Text(stringResource(Res.string.share_verify_out_of_band), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(Res.string.share_reference_is_not_identity), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (isNew) OutlinedTextField(value = alias, onValueChange = { alias = it }, enabled = !state.busy, singleLine = true, label = { Text(stringResource(Res.string.share_contact_name)) }, modifier = Modifier.fillMaxWidth().testTag("share_contact_verification_alias"))
+                    else state.existingAlias?.let { Text(stringResource(Res.string.share_existing_contact, it)) }
+                    state.error?.let { InlineError(it) }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(onClick = controller::dismissContactVerification, enabled = !state.busy, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(stringResource(Res.string.back)) }
+                        Button(onClick = { controller.confirmContactVerification(alias) }, enabled = !state.busy && (!isNew || alias.isNotBlank()), modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("share_contact_verification_confirm")) {
+                            if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(Res.string.share_confirm_identity))
+                        }
+                    }
+                }
+            }
+        }
+        is SharingContactVerificationState.Completed -> ElevatedCard(Modifier.widthIn(max = 430.dp).testTag("share_contact_verification_complete")) {
+            Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary)
+                Text(stringResource(Res.string.share_contact_verified_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(Res.string.share_contact_verified_description, state.alias))
+                Button(onClick = controller::finishContactVerification, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(stringResource(Res.string.done)) }
             }
         }
     }

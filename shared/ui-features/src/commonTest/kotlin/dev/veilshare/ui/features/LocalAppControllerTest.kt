@@ -256,6 +256,31 @@ class LocalAppControllerTest {
         assertIs<RootState.Unlocked>(controller.state.value)
     }
 
+    @Test fun contactCanBeVerifiedBeforeAnyFileTransfer() = runTest {
+        val runtime = RecordingSharingRuntime(
+            peerLookupResult = SharingPeerLookupResult.NeedsVerification(
+                fingerprint = "12".repeat(32),
+                reason = SharingVerificationReason.NEW_PEER,
+            ),
+        )
+        val controller = controller(FakeService(LocalStorageState.READY), runtime)
+        controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
+        controller.startContactVerification()
+        controller.enterContactVerificationReferenceCode(TEST_REFERENCE.value)
+        controller.lookupContactForVerification(); advanceUntilIdle()
+        val verification = assertIs<SharingContactVerificationState.VerificationRequired>(assertIs<RootState.SharingContactVerification>(controller.state.value).state)
+        assertEquals(TEST_REFERENCE, verification.referenceCode)
+        assertEquals(1, runtime.inspectCalls)
+        assertEquals(0, runtime.sendCalls)
+        controller.confirmContactVerification("Alice"); advanceUntilIdle()
+        assertEquals(1, runtime.confirmCalls)
+        val completed = assertIs<SharingContactVerificationState.Completed>(assertIs<RootState.SharingContactVerification>(controller.state.value).state)
+        assertEquals("Alice", completed.alias)
+        controller.finishContactVerification(); advanceUntilIdle()
+        assertIs<RootState.Unlocked>(controller.state.value)
+        assertEquals(0, runtime.sendCalls)
+    }
+
     @Test fun cancelWhileSendingPropagatesAndLeavesTerminalCancelledState() = runTest {
         val runtime = RecordingSharingRuntime(suspendSend = true)
         val picked = BytesSharingFile("large.bin", ByteArray(32))
@@ -310,12 +335,14 @@ private class RecordingSharingRuntime(
     private val activation: SharingRuntimeActivation = SharingRuntimeActivation.Ready(TEST_REFERENCE),
     private val sendResult: SharingSendResult = SharingSendResult.Completed,
     private val verificationResult: SharingVerificationResult = SharingVerificationResult.Verified,
+    private val peerLookupResult: SharingPeerLookupResult = SharingPeerLookupResult.Trusted("Known contact"),
     private val suspendSend: Boolean = false,
 ) : SharingRuntime {
     private val mutableEvents = MutableSharedFlow<SharingRuntimeEvent>(extraBufferCapacity = 16)
     override val events: Flow<SharingRuntimeEvent> = mutableEvents
 
     var activateCalls = 0
+    var inspectCalls = 0
     var sendCalls = 0
     var confirmCalls = 0
     var dismissCalls = 0
@@ -332,6 +359,12 @@ private class RecordingSharingRuntime(
     override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation {
         activateCalls++
         return activation
+    }
+
+    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
+        inspectCalls++
+        lastReferenceCode = referenceCode
+        return peerLookupResult
     }
 
     override suspend fun send(

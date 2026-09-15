@@ -2,6 +2,7 @@ package dev.veilshare.app
 
 import dev.veilshare.core.contacts.ContactVerificationMethod
 import dev.veilshare.core.contacts.LookupTrustResolver
+import dev.veilshare.core.contacts.LookupTrustResult
 import dev.veilshare.core.contacts.PeerTrustDecision
 import dev.veilshare.core.contacts.TrustedContactManager
 import dev.veilshare.core.contacts.VerificationReason
@@ -17,6 +18,7 @@ import dev.veilshare.core.identity.SharingIdentityManager
 import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.LocalPersonaId
+import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.MessageType
 import dev.veilshare.core.model.OpaqueIds
 import dev.veilshare.core.model.RandomBytesSource
@@ -41,6 +43,7 @@ import dev.veilshare.core.transfer.TransferSource
 import dev.veilshare.core.transfer.TrustedOutboundHandshakeCompleter
 import dev.veilshare.core.transfer.TrustedOutboundSessionStarter
 import dev.veilshare.core.vault.VaultHandle
+import dev.veilshare.ui.features.SharingPeerLookupResult
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingProgress
 import dev.veilshare.ui.features.SharingRuntime
@@ -173,6 +176,56 @@ class DefaultSharingRuntime(
             }
             runCatching { signalingClient.close() }
             SharingRuntimeActivation.Unavailable("No se pudo activar el canal de compartir.")
+        }
+    }
+
+    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
+        val contextId = stateMutex.withLock {
+            pendingVerification = null
+            activeContext
+        } ?: return SharingPeerLookupResult.Unavailable("Compartir no está activo.")
+        val localIdentity = identities.publicIdentity(contextId)
+            ?: return SharingPeerLookupResult.Unavailable("No se encontró la identidad local de compartir.")
+        return try {
+            val response = signalingClient.lookup(
+                LookupRequest(
+                    referenceCode = referenceCode,
+                    requestorSharingIdentityId = localIdentity.identityId,
+                ),
+            )
+            when (val resolved = LookupTrustResolver(contacts).resolve(referenceCode, response)) {
+                is LookupTrustResult.Unavailable -> {
+                    stateMutex.withLock { pendingVerification = null }
+                    SharingPeerLookupResult.Unavailable("No hay un dispositivo disponible con ese código.")
+                }
+                is LookupTrustResult.Peer -> when (val decision = resolved.decision) {
+                    is PeerTrustDecision.Trusted -> {
+                        stateMutex.withLock { pendingVerification = null }
+                        SharingPeerLookupResult.Trusted(decision.contact.alias)
+                    }
+                    is PeerTrustDecision.NeedsVerification -> {
+                        stateMutex.withLock { pendingVerification = decision }
+                        SharingPeerLookupResult.NeedsVerification(
+                            fingerprint = decision.candidate.fingerprint.value,
+                            reason = when (decision.reason) {
+                                VerificationReason.NEW_PEER -> SharingVerificationReason.NEW_PEER
+                                VerificationReason.IDENTITY_CHANGED_FOR_ROUTING_CODE -> SharingVerificationReason.IDENTITY_CHANGED
+                            },
+                            existingAlias = decision.existingContact?.alias,
+                        )
+                    }
+                    is PeerTrustDecision.KeyMismatch -> {
+                        stateMutex.withLock { pendingVerification = null }
+                        SharingPeerLookupResult.KeyMismatch(
+                            expectedFingerprint = decision.contact.fingerprint.value,
+                            presentedFingerprint = decision.presentedFingerprint.value,
+                        )
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            stateMutex.withLock { pendingVerification = null }
+            SharingPeerLookupResult.Failed("No se pudo comprobar la identidad del contacto.")
         }
     }
 

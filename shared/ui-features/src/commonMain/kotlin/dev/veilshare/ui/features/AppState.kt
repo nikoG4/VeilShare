@@ -16,6 +16,7 @@ sealed interface RootState {
     data class Fatal(val message: String) : RootState
     data class SharingSender(val state: SharingSenderState) : RootState
     data class SharingReceiver(val state: SharingReceiverState) : RootState
+    data class SharingContactVerification(val state: SharingContactVerificationState) : RootState
 }
 
 data class BrowserItem(val id: String, val name: String, val isDirectory: Boolean, val size: Long? = null, val mime: String? = null)
@@ -56,6 +57,37 @@ sealed interface SharingReceiverState {
     data class Error(val message: String) : SharingReceiverState
     data object Rejected : SharingReceiverState
     data object Cancelled : SharingReceiverState
+}
+
+sealed interface SharingContactVerificationState {
+    data class Entering(
+        val referenceCode: String = "",
+        val busy: Boolean = false,
+        val error: String? = null,
+    ) : SharingContactVerificationState
+
+    data class VerificationRequired(
+        val referenceCode: ReferenceCode,
+        val fingerprint: String,
+        val reason: SharingVerificationReason,
+        val existingAlias: String? = null,
+        val busy: Boolean = false,
+        val error: String? = null,
+    ) : SharingContactVerificationState
+
+    data class Completed(val alias: String) : SharingContactVerificationState
+}
+
+sealed interface SharingPeerLookupResult {
+    data class Trusted(val alias: String) : SharingPeerLookupResult
+    data class NeedsVerification(
+        val fingerprint: String,
+        val reason: SharingVerificationReason,
+        val existingAlias: String? = null,
+    ) : SharingPeerLookupResult
+    data class KeyMismatch(val expectedFingerprint: String, val presentedFingerprint: String) : SharingPeerLookupResult
+    data class Unavailable(val reason: String? = null) : SharingPeerLookupResult
+    data class Failed(val reason: String? = null) : SharingPeerLookupResult
 }
 
 data class SharingProgress(
@@ -131,6 +163,9 @@ interface SharingRuntime : AutoCloseable {
 
     suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation
 
+    /** Performs only LOOKUP + trust evaluation. It never starts a handshake or transfer. */
+    suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult
+
     /** Takes ownership of [file] immediately and must close it exactly once. */
     suspend fun send(
         referenceCode: ReferenceCode,
@@ -151,6 +186,9 @@ object UnavailableSharingRuntime : SharingRuntime {
     override val events: Flow<SharingRuntimeEvent> = emptyFlow()
     override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation =
         SharingRuntimeActivation.Unavailable("Sharing runtime is not configured")
+
+    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult =
+        SharingPeerLookupResult.Unavailable("Sharing runtime is not configured")
 
     override suspend fun send(
         referenceCode: ReferenceCode,
