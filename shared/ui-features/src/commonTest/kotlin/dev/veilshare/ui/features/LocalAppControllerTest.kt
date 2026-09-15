@@ -7,10 +7,7 @@ import dev.veilshare.core.vault.*
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.*
 import kotlin.test.*
 
 class LocalAppControllerTest {
@@ -48,7 +45,7 @@ class LocalAppControllerTest {
             NoopOpener,
             object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },
             RecordingSharingRuntime(),
-            this,
+            backgroundScope,
             dispatcher,
         )
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
@@ -69,7 +66,7 @@ class LocalAppControllerTest {
             opener,
             object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },
             RecordingSharingRuntime(),
-            this,
+            backgroundScope,
             StandardTestDispatcher(testScheduler),
         )
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
@@ -89,7 +86,7 @@ class LocalAppControllerTest {
             opener,
             object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },
             RecordingSharingRuntime(),
-            this,
+            backgroundScope,
             dispatcher,
         )
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
@@ -286,7 +283,7 @@ class LocalAppControllerTest {
         NoopOpener,
         sharingPicker,
         runtime,
-        this,
+        backgroundScope,
         StandardTestDispatcher(testScheduler),
     )
 }
