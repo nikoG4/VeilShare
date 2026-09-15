@@ -21,6 +21,9 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -55,8 +58,15 @@ class KtorSignalingClientIntegrationTest {
             assertEquals(LookupStatus.FOUND, lookup.status)
             assertEquals(bobId, lookup.sharingIdentityId)
 
-            alice.relay(RelayRequest(bobCode, SessionId("session-1"), opaque))
-            val relayed = withTimeout(5_000) { bob.incoming.first() }
+            val relayed = coroutineScope {
+                // MutableSharedFlow intentionally has no replay. Subscribe before sending so
+                // this test cannot race a fast local transport and drop the relayed frame.
+                val awaiting = async(start = CoroutineStart.UNDISPATCHED) {
+                    withTimeout(5_000) { bob.incoming.first() }
+                }
+                alice.relay(RelayRequest(bobCode, SessionId("session-1"), opaque))
+                awaiting.await()
+            }
             assertEquals(MessageType.RELAY, relayed.type)
             assertEquals(SessionId("session-1"), relayed.sessionId)
             assertContentEquals(opaque, relayed.payload)
@@ -78,6 +88,36 @@ class KtorSignalingClientIntegrationTest {
             assertEquals(LookupStatus.NOT_FOUND, lookup.status)
         } finally {
             verifier.close()
+        }
+    }
+
+    @Test
+    fun registeredPresenceIsRefreshedPastServerTtl() = testApplication {
+        val state = SignalingServerState(
+            clock = SignalingClock { System.currentTimeMillis() },
+            limits = SignalingLimits(presenceTtlMillis = 150),
+        )
+        application { signalingModule(state) }
+        val http = createClient { install(WebSockets) }
+        val code = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
+        val identity = SharingIdentityId("keepalive-client")
+        val signaling = KtorSignalingClient(
+            httpClient = http,
+            endpointUrl = "/v1/ws",
+            random = CountingEntropy(90),
+            timeoutMillis = 2_000,
+            registrationKeepAliveMillis = 35,
+        )
+
+        try {
+            signaling.connect()
+            signaling.register(RegisterRequest(identity, code, "public-key"))
+            delay(450)
+            val lookup = signaling.lookup(LookupRequest(code, identity))
+            assertEquals(LookupStatus.FOUND, lookup.status)
+            assertEquals(identity, lookup.sharingIdentityId)
+        } finally {
+            signaling.close()
         }
     }
 
