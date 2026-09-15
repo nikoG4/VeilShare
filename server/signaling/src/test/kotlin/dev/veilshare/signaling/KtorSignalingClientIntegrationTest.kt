@@ -12,15 +12,28 @@ import dev.veilshare.core.model.SharingIdentityId
 import dev.veilshare.core.model.UnregisterRequest
 import dev.veilshare.core.platform.KtorSignalingClient
 import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import io.ktor.server.testing.testApplication
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeout
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 
 class KtorSignalingClientIntegrationTest {
-    @Test fun twoClientsRegisterLookupRelayAndUnregisterPresence() = testApplication {
+    @Test
+    fun healthEndpointIsAvailableWithoutOpeningAWebSocket() = testApplication {
+        application { signalingModule() }
+        assertEquals("ok", client.get("/healthz").bodyAsText())
+    }
+
+    @Test
+    fun twoClientsRegisterLookupRelayAndUnregisterPresence() = testApplication {
         val state = SignalingServerState(clock = MutableSignalingClock())
         application { signalingModule(state) }
         val http = createClient { install(WebSockets) }
@@ -65,6 +78,46 @@ class KtorSignalingClientIntegrationTest {
             assertEquals(LookupStatus.NOT_FOUND, lookup.status)
         } finally {
             verifier.close()
+        }
+    }
+
+    @Test
+    fun clientCanReconnectAndReregisterAfterRemoteTransportDrop() = testApplication {
+        val state = SignalingServerState(clock = MutableSignalingClock())
+        application { signalingModule(state) }
+        val http = createClient { install(WebSockets) }
+        val code = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
+        val identity = SharingIdentityId("reconnect-client")
+        val signaling = KtorSignalingClient(http, "/v1/ws", CountingEntropy(120), timeoutMillis = 2_000)
+
+        try {
+            signaling.connect()
+            signaling.register(RegisterRequest(identity, code, "public-key"))
+            assertEquals(LookupStatus.FOUND, signaling.lookup(LookupRequest(code, identity)).status)
+
+            withTimeout(5_000) {
+                while (state.sockets.size != 1) delay(10)
+            }
+            val serverSocket = assertNotNull(state.sockets.values.singleOrNull())
+            serverSocket.close(CloseReason(CloseReason.Codes.GOING_AWAY, "test transport drop"))
+
+            withTimeout(5_000) {
+                while (state.sockets.isNotEmpty()) delay(10)
+            }
+            // A request on the dropped transport must fail rather than hanging until a
+            // successful-looking timeout path. The next explicit connect creates a fresh
+            // transport; presence is then explicitly re-registered.
+            withTimeout(5_000) {
+                while (runCatching { signaling.lookup(LookupRequest(code, identity)) }.isSuccess) delay(10)
+            }
+
+            signaling.connect()
+            signaling.register(RegisterRequest(identity, code, "public-key"))
+            val afterReconnect = signaling.lookup(LookupRequest(code, identity))
+            assertEquals(LookupStatus.FOUND, afterReconnect.status)
+            assertEquals(identity, afterReconnect.sharingIdentityId)
+        } finally {
+            signaling.close()
         }
     }
 }
