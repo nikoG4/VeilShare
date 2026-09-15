@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.WindowManager
@@ -12,6 +13,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.veilshare.app.AppEnvironment
@@ -26,21 +30,27 @@ import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import java.io.File
 import java.io.InputStream
+import java.util.ArrayDeque
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val lockSignals = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val externalImportSignals = Channel<Unit>(capacity = Channel.BUFFERED)
     private lateinit var picker: AndroidDocumentPicker
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         picker = AndroidDocumentPicker(this)
+        handleExternalShare(intent)
+
         val openCache = AndroidOwnedPlaintextCache(File(cacheDir, "open-4f16a9"))
         val endpoint = BuildConfig.SHARING_SIGNALING_URL.trim().takeIf(String::isNotEmpty)
             ?: if (BuildConfig.DEBUG) "ws://10.0.2.2:8080/v1/ws" else null
@@ -60,13 +70,35 @@ class MainActivity : ComponentActivity() {
             sharingFilePicker = picker,
             sharingRuntime = sharingRuntime,
             lockSignals = lockSignals,
+            externalImportSignals = externalImportSignals.receiveAsFlow(),
         )
         setContent {
-            BoxWithConstraints {
-                val widthClass = when { maxWidth < 600.dp -> VeilWindowClass.Compact; maxWidth < 840.dp -> VeilWindowClass.Medium; else -> VeilWindowClass.Expanded }
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .safeDrawingPadding(),
+            ) {
+                val widthClass = when {
+                    maxWidth < 600.dp -> VeilWindowClass.Compact
+                    maxWidth < 840.dp -> VeilWindowClass.Medium
+                    else -> VeilWindowClass.Expanded
+                }
                 AppRoot(environment, widthClass)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleExternalShare(intent)
+    }
+
+    private fun handleExternalShare(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri = intent.sharedStreamUri() ?: return
+        picker.enqueueExternal(uri)
+        externalImportSignals.trySend(Unit)
     }
 
     override fun onStop() {
@@ -76,15 +108,31 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Suppress("DEPRECATION")
+private fun Intent.sharedStreamUri(): Uri? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+    } else {
+        getParcelableExtra(Intent.EXTRA_STREAM)
+    } ?: clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+
 internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePicker, SharingFilePicker {
     private var continuation: Continuation<Uri?>? = null
+    private val externalUris = ArrayDeque<Uri>()
     var inFlight: Boolean = false; private set
     private val resolver = activity.contentResolver
     private val launcher = activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         inFlight = false; continuation?.resume(uri); continuation = null
     }
 
-    override suspend fun pick(): ImportSource? = pickUri()?.let { AndroidUriImportSource(resolver, it) }
+    fun enqueueExternal(uri: Uri) {
+        externalUris.addLast(uri)
+    }
+
+    override suspend fun pick(): ImportSource? {
+        val uri = if (externalUris.isEmpty()) pickUri() else externalUris.removeFirst()
+        return uri?.let { AndroidUriImportSource(resolver, it) }
+    }
 
     override suspend fun pickFile(): SharingPickedFile? = pickUri()?.let { AndroidUriSharingFile(resolver, it) }
 
