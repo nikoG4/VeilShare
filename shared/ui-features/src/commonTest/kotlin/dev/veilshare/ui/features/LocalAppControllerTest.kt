@@ -342,6 +342,7 @@ private class RecordingSharingRuntime(
     override val events: Flow<SharingRuntimeEvent> = mutableEvents
 
     var activateCalls = 0
+    var refreshCalls = 0
     var inspectCalls = 0
     var sendCalls = 0
     var confirmCalls = 0
@@ -358,6 +359,11 @@ private class RecordingSharingRuntime(
 
     override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation {
         activateCalls++
+        return activation
+    }
+
+    override suspend fun refreshPresence(): SharingRuntimeActivation {
+        refreshCalls++
         return activation
     }
 

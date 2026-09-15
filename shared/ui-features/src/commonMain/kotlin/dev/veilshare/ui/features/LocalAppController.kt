@@ -451,12 +451,42 @@ class LocalAppController(
 
     fun startSharingReceiver() {
         if (mutableState.value !is RootState.Unlocked) return
+        if (sharingJob?.isActive == true) return
         val referenceCode = ownSharingReferenceCode
         if (referenceCode == null) {
             mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("Compartir no está disponible en esta sesión."))
             return
         }
         mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
+        sharingJob = scope.launch {
+            try {
+                when (val refreshed = withContext(workDispatcher) { sharingRuntime.refreshPresence() }) {
+                    is SharingRuntimeActivation.Ready -> {
+                        ownSharingReferenceCode = refreshed.referenceCode
+                        if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {
+                            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(refreshed.referenceCode))
+                        }
+                    }
+                    is SharingRuntimeActivation.Unavailable -> {
+                        if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {
+                            mutableState.value = RootState.SharingReceiver(
+                                SharingReceiverState.Error(refreshed.reason ?: "No se pudo restablecer el canal de compartir."),
+                            )
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {
+                    mutableState.value = RootState.SharingReceiver(
+                        SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),
+                    )
+                }
+            } finally {
+                sharingJob = null
+            }
+        }
     }
 
     fun acceptIncomingSharing() {
