@@ -20,7 +20,6 @@ import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.RandomBytesSource
 import dev.veilshare.core.platform.KtorSignalingClient
 import dev.veilshare.core.vault.ImportProgress
-import dev.veilshare.core.vault.ImportReadHandle
 import dev.veilshare.core.vault.ImportSource
 import dev.veilshare.core.vault.VaultDirectoryId
 import dev.veilshare.core.vault.VaultHandle
@@ -41,6 +40,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -51,7 +51,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 class FullSharingRuntimeE2ETest {
     @Test
@@ -95,32 +95,36 @@ class FullSharingRuntimeE2ETest {
 
             coroutineScope {
                 val receiving = async(start = CoroutineStart.UNDISPATCHED) {
-                    withTimeout(30_000) {
-                        val offer = bob.runtime.events
+                    val offer = withTimeoutOrNull(10_000) {
+                        bob.runtime.events
                             .filterIsInstance<SharingRuntimeEvent.IncomingOffer>()
                             .first()
-                        assertEquals("Alice", offer.senderIdentity)
-                        assertEquals(selected.displayName, offer.fileName)
-                        assertEquals(payload.size.toLong(), offer.fileSize)
+                    }
+                    assertNotNull(offer, "receiver never observed authenticated IncomingOffer")
+                    assertEquals("Alice", offer.senderIdentity)
+                    assertEquals(selected.displayName, offer.fileName)
+                    assertEquals(payload.size.toLong(), offer.fileSize)
+
+                    val receiverFinished = withTimeoutOrNull(30_000) {
                         bob.runtime.acceptIncoming()
+                        true
                     }
+                    assertEquals(true, receiverFinished, "receiver timed out after accepting offer")
                 }
 
-                val sending = async {
-                    withTimeout(30_000) {
-                        alice.runtime.send(bobActivation.referenceCode, selected) { progress ->
-                            senderProgress += progress
-                        }
+                val sendResult = withTimeoutOrNull(30_000) {
+                    alice.runtime.send(bobActivation.referenceCode, selected) { progress ->
+                        senderProgress += progress
                     }
                 }
-
-                assertIs<SharingSendResult.Completed>(sending.await())
+                assertNotNull(sendResult, "sender timed out during handshake/offer/DATA")
+                assertIs<SharingSendResult.Completed>(sendResult)
                 receiving.await()
             }
 
             assertEquals(1, selected.closeCalls, "runtime must close sender source exactly once")
             assertTrue(senderProgress.any { it.totalChunks >= 2 }, "transfer must exercise multiple chunks")
-            assertTrue(senderProgress.last().bytesTransferred == payload.size.toLong())
+            assertEquals(payload.size.toLong(), senderProgress.last().bytesTransferred)
             assertEquals(1, bob.vault.importedFiles.size)
             assertEquals("multi-chunk.bin", bob.vault.importedFiles.single().displayName)
             assertContentEquals(payload, bob.vault.importedBytes.single())
