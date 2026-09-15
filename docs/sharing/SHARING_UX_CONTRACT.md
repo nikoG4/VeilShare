@@ -27,12 +27,13 @@ The currently unlocked local persona maps to an opaque `LocalPersonaId`, which P
 
 ## Primary entry points
 
-While a vault is unlocked the browser exposes two explicit actions:
+While a vault is unlocked the browser exposes three explicit actions:
 
 1. **Enviar archivo** — choose a file, enter a peer ReferenceCode, verify trust if needed, then send.
 2. **Recibir archivo** — show this persona's current ReferenceCode and wait for a trusted inbound offer.
+3. **Verificar contacto** — resolve a peer ReferenceCode, compare the fingerprint out of band, and explicitly pin or re-verify that contact without starting a handshake or transferring a file.
 
-Advanced contact management belongs in a secondary surface and is not required for the PR #6 freeze baseline.
+Full trusted-contact CRUD belongs in a secondary surface and is not required for the PR #6 freeze baseline.
 
 ## Sender state machine
 
@@ -97,6 +98,23 @@ Advanced contact management belongs in a secondary surface and is not required f
 - terminal explanation;
 - Done returns to browser.
 
+## Pre-transfer contact verification
+
+`Verificar contacto` is deliberately independent from file sending. It performs only signaling LOOKUP plus the existing trust evaluation boundary. It MUST NOT send SESSION_HELLO, establish a peer session, or transfer file data.
+
+The flow is:
+
+1. enter a peer ReferenceCode;
+2. LOOKUP resolves the currently advertised sharing identity/public key;
+3. `LookupTrustResolver` evaluates the result against the persona-scoped trusted-contact store;
+4. an already pinned peer completes immediately;
+5. a new or changed routed identity displays only the grouped fingerprint, reason, and existing alias if any;
+6. after an out-of-band comparison, explicit confirmation uses the same manual-fingerprint trust path as sender verification.
+
+This permits two new devices to verify each other before either enters `Recibir archivo`. The untrusted candidate public-key object remains runtime-owned throughout.
+
+Cancellation during LOOKUP or confirmation is propagated as coroutine cancellation and MUST NOT overwrite the user's terminal/navigation state with a generic verification error.
+
 ## Verification baseline
 
 PR #6 implements grouped manual fingerprint comparison. The runtime retains the untrusted `PeerIdentityCandidate`; UI receives only its fingerprint and verification reason. Confirmation invokes the core trust manager:
@@ -112,13 +130,13 @@ QR is a follow-up transport for public verification material. When added, scanni
 
 Compact:
 - one-column cards;
-- Send/Receive actions remain visible from the browser;
+- Send/Receive/Verify actions remain visible from the browser;
 - primary action full width where useful;
 - file/peer metadata above destructive/accept actions.
 
 Expanded:
 - content width capped for readability;
-- Send/Receive actions remain visible from the browser toolbar;
+- Send/Receive/Verify actions remain visible from the browser toolbar;
 - no stretching verification/forms edge-to-edge.
 
 ## Accessibility and testing
@@ -129,6 +147,7 @@ Important sharing entry and verification actions have stable test tags. Controll
 - first-peer verification required -> explicit confirmation -> fresh preparation;
 - changed identity confirmation using the existing alias;
 - verification dismissal clears runtime pending trust;
+- independent contact LOOKUP -> fingerprint confirmation without calling `send()`;
 - Receive entry and ReferenceCode state;
 - Accept and Reject callbacks;
 - Cancel while sending;
