@@ -16,12 +16,16 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.veilshare.app.AppEnvironment
 import dev.veilshare.app.AppRoot
+import dev.veilshare.app.createAndroidSharingRuntime
 import dev.veilshare.core.vault.*
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalFilePicker
+import dev.veilshare.ui.features.SharingFilePicker
+import dev.veilshare.ui.features.SharingPickedFile
+import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import java.io.File
-import java.io.FileInputStream
+import java.io.InputStream
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
@@ -38,9 +42,18 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         picker = AndroidDocumentPicker(this)
         val openCache = AndroidOwnedPlaintextCache(File(cacheDir, "open-4f16a9"))
+        val endpoint = BuildConfig.SHARING_SIGNALING_URL.trim().takeIf(String::isNotEmpty)
+            ?: if (BuildConfig.DEBUG) "ws://10.0.2.2:8080/v1/ws" else null
+        val sharingRuntime = endpoint?.let { url ->
+            runCatching { createAndroidSharingRuntime(this, url) }.getOrElse { UnavailableSharingRuntime }
+        } ?: UnavailableSharingRuntime
         val environment = AppEnvironment(
-            AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)), picker,
-            AndroidFileOpener(this, openCache), lockSignals,
+            vaults = AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)),
+            picker = picker,
+            opener = AndroidFileOpener(this, openCache),
+            sharingFilePicker = picker,
+            sharingRuntime = sharingRuntime,
+            lockSignals = lockSignals,
         )
         setContent {
             BoxWithConstraints {
@@ -57,7 +70,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePicker {
+internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePicker, SharingFilePicker {
     private var continuation: Continuation<Uri?>? = null
     var inFlight: Boolean = false; private set
     private val resolver = activity.contentResolver
@@ -65,15 +78,16 @@ internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePic
         inFlight = false; continuation?.resume(uri); continuation = null
     }
 
-    override suspend fun pick(): ImportSource? {
-        val uri = suspendCancellableCoroutine<Uri?> { pending ->
-            check(continuation == null) { "Picker already active" }
-            continuation = pending
-            inFlight = true
-            pending.invokeOnCancellation { continuation = null; inFlight = false }
-            launcher.launch(arrayOf("*/*"))
-        } ?: return null
-        return AndroidUriImportSource(resolver, uri)
+    override suspend fun pick(): ImportSource? = pickUri()?.let { AndroidUriImportSource(resolver, it) }
+
+    override suspend fun pickFile(): SharingPickedFile? = pickUri()?.let { AndroidUriSharingFile(resolver, it) }
+
+    private suspend fun pickUri(): Uri? = suspendCancellableCoroutine { pending ->
+        check(continuation == null) { "Picker already active" }
+        continuation = pending
+        inFlight = true
+        pending.invokeOnCancellation { continuation = null; inFlight = false }
+        launcher.launch(arrayOf("*/*"))
     }
 }
 
@@ -91,6 +105,74 @@ internal class AndroidUriImportSource(private val resolver: ContentResolver, pri
             }
             override suspend fun close() = withContext(Dispatchers.IO) { stream.close() }
         }
+    }
+}
+
+/**
+ * SAF-backed source owned by the sharing runtime after send(). No plaintext cache copy is
+ * created. Reads are normally sequential; a retry/backward offset safely reopens and seeks
+ * the provider stream from the beginning.
+ */
+internal class AndroidUriSharingFile(
+    private val resolver: ContentResolver,
+    private val uri: Uri,
+) : SharingPickedFile {
+    private val metadata = resolver.queryMetadata(uri)
+    override val displayName: String = metadata.first ?: "archivo"
+    override val size: Long = requireNotNull(metadata.second) { "Selected document does not expose a stable size" }.also {
+        require(it > 0) { "Empty documents are not supported by Sharing V1" }
+    }
+    override val mimeType: String? = resolver.getType(uri)
+
+    private var stream: InputStream? = null
+    private var streamOffset = 0L
+    private var closed = false
+
+    override suspend fun readChunk(offset: Long, size: Int): ByteArray = withContext(Dispatchers.IO) {
+        check(!closed) { "Sharing file is closed" }
+        require(offset >= 0 && offset <= this@AndroidUriSharingFile.size) { "Invalid sharing read offset" }
+        require(size > 0) { "Sharing read size must be positive" }
+        if (offset == this@AndroidUriSharingFile.size) return@withContext ByteArray(0)
+
+        positionAt(offset)
+        val requested = minOf(size.toLong(), this@AndroidUriSharingFile.size - offset).toInt()
+        val buffer = ByteArray(requested)
+        var written = 0
+        val input = requireNotNull(stream)
+        while (written < requested) {
+            val count = input.read(buffer, written, requested - written)
+            if (count < 0) error("Selected document ended before its declared size")
+            if (count == 0) continue
+            written += count
+            streamOffset += count
+        }
+        buffer
+    }
+
+    private fun positionAt(target: Long) {
+        if (stream == null || target < streamOffset) {
+            stream?.close()
+            stream = resolver.openInputStream(uri) ?: error("Selected document is no longer available")
+            streamOffset = 0L
+        }
+        val input = requireNotNull(stream)
+        while (streamOffset < target) {
+            val remaining = target - streamOffset
+            val skipped = input.skip(remaining)
+            if (skipped > 0) {
+                streamOffset += skipped
+            } else {
+                if (input.read() < 0) error("Selected document ended before requested offset")
+                streamOffset++
+            }
+        }
+    }
+
+    override suspend fun close() = withContext(Dispatchers.IO) {
+        if (closed) return@withContext
+        closed = true
+        stream?.close()
+        stream = null
     }
 }
 

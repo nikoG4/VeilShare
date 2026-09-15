@@ -58,7 +58,8 @@ class AndroidLocalVaultService(private val root: File) : LocalVaultService {
                     AndroidBlobStore(File(root, "blobs"), result.session.descriptor.blobNamespace), journal,
                     ChangeCredentialUseCase(slots, crypto.random, crypto.passwordKdf, wrapper, policy),
                 )
-                try { active.recover(); LocalUnlockResult.Ready(active) }
+                val personaId = localPersonaIdFor(result.session.descriptor.vaultId)
+                try { active.recover(); LocalUnlockResult.Ready(active, personaId) }
                 catch (_: Exception) { active.close(); LocalUnlockResult.Corrupt }
             }
         }

@@ -62,7 +62,8 @@ class DesktopLocalVaultService(private val root: Path) : LocalVaultService {
                     DesktopBlobStore(root.resolve("blobs"), result.session.descriptor.blobNamespace), journal,
                     ChangeCredentialUseCase(slots, crypto.random, crypto.passwordKdf, wrapper, policy),
                 )
-                try { active.recover(); LocalUnlockResult.Ready(active) }
+                val personaId = localPersonaIdFor(result.session.descriptor.vaultId)
+                try { active.recover(); LocalUnlockResult.Ready(active, personaId) }
                 catch (_: Exception) { active.close(); LocalUnlockResult.Corrupt }
             }
         }
