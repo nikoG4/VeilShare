@@ -29,9 +29,19 @@ data class BrowserState(
     val message: String? = null,
 )
 
+enum class SharingVerificationReason { NEW_PEER, IDENTITY_CHANGED }
+
 sealed interface SharingSenderState {
     data class Preparing(val referenceCode: String? = null, val selectedFile: String? = null) : SharingSenderState
     data class Connecting(val referenceCode: ReferenceCode) : SharingSenderState
+    data class VerificationRequired(
+        val referenceCode: ReferenceCode,
+        val fingerprint: String,
+        val reason: SharingVerificationReason,
+        val existingAlias: String? = null,
+        val busy: Boolean = false,
+        val error: String? = null,
+    ) : SharingSenderState
     data class Sending(val progress: SharingProgress) : SharingSenderState
     data object Completed : SharingSenderState
     data class Error(val message: String, val canRetry: Boolean = true) : SharingSenderState
@@ -84,10 +94,19 @@ sealed interface SharingRuntimeActivation {
 
 sealed interface SharingSendResult {
     data object Completed : SharingSendResult
-    data class NeedsVerification(val fingerprint: String) : SharingSendResult
+    data class NeedsVerification(
+        val fingerprint: String,
+        val reason: SharingVerificationReason = SharingVerificationReason.NEW_PEER,
+        val existingAlias: String? = null,
+    ) : SharingSendResult
     data class KeyMismatch(val expectedFingerprint: String, val presentedFingerprint: String) : SharingSendResult
     data class Unavailable(val reason: String? = null) : SharingSendResult
     data class Failed(val reason: String? = null) : SharingSendResult
+}
+
+sealed interface SharingVerificationResult {
+    data object Verified : SharingVerificationResult
+    data class Failed(val reason: String? = null) : SharingVerificationResult
 }
 
 sealed interface SharingRuntimeEvent {
@@ -119,6 +138,9 @@ interface SharingRuntime : AutoCloseable {
         onProgress: suspend (SharingProgress) -> Unit,
     ): SharingSendResult
 
+    /** Confirms only the currently pending fingerprint verification; no key material leaves the runtime. */
+    suspend fun confirmPendingPeer(alias: String): SharingVerificationResult
+    suspend fun dismissPendingPeerVerification()
     suspend fun acceptIncoming()
     suspend fun rejectIncoming()
     suspend fun cancelCurrent()
@@ -142,6 +164,9 @@ object UnavailableSharingRuntime : SharingRuntime {
         }
     }
 
+    override suspend fun confirmPendingPeer(alias: String) =
+        SharingVerificationResult.Failed("Sharing runtime is not configured")
+    override suspend fun dismissPendingPeerVerification() = Unit
     override suspend fun acceptIncoming() = Unit
     override suspend fun rejectIncoming() = Unit
     override suspend fun cancelCurrent() = Unit
