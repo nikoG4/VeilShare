@@ -45,7 +45,13 @@ class MainActivity : ComponentActivity() {
         val endpoint = BuildConfig.SHARING_SIGNALING_URL.trim().takeIf(String::isNotEmpty)
             ?: if (BuildConfig.DEBUG) "ws://10.0.2.2:8080/v1/ws" else null
         val sharingRuntime = endpoint?.let { url ->
-            runCatching { createAndroidSharingRuntime(this, url) }.getOrElse { UnavailableSharingRuntime }
+            runCatching {
+                createAndroidSharingRuntime(
+                    context = this,
+                    endpointUrl = url,
+                    allowInsecureLoopback = BuildConfig.DEBUG,
+                )
+            }.getOrElse { UnavailableSharingRuntime }
         } ?: UnavailableSharingRuntime
         val environment = AppEnvironment(
             vaults = AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)),
