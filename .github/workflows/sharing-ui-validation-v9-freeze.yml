@@ -1,0 +1,57 @@
+name: Sharing UI Validation V9 Freeze
+
+on:
+  push:
+    branches:
+      - ci/sharing-ui-validation-v9-freeze
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - run: ./gradlew :shared:core-model:desktopTest :shared:core-crypto:desktopTest :shared:core-identity:desktopTest :shared:core-contacts:desktopTest :shared:core-transfer:desktopTest :shared:core-vault:desktopTest :shared:app:desktopTest :shared:ui-features:desktopTest --no-daemon --stacktrace
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - run: ./gradlew :shared:app:compileKotlinDesktop :shared:ui-features:compileKotlinDesktop :desktopApp:compileKotlin --no-daemon --stacktrace
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - run: ./gradlew :shared:app:compileDebugKotlinAndroid :shared:ui-features:compileDebugKotlinAndroid :androidApp:compileDebugKotlin --no-daemon --stacktrace
+
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git diff --check origin/feature/sharing-app-runtime...HEAD
