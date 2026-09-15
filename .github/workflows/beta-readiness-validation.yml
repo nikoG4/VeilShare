@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/beta-readiness
+      - feature/android-ux-overhaul
   workflow_dispatch:
 
 permissions:
