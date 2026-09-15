@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "buildCommand": "bash gradlew :server:signaling:installDist --no-daemon"
+  },
+  "deploy": {
+    "startCommand": "bash server/signaling/build/install/signaling/bin/signaling",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
