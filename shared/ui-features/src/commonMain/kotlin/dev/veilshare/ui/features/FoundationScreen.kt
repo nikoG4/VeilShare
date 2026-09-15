@@ -36,6 +36,7 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
                 is RootState.Fatal -> ErrorScreen(value.message)
                 is RootState.SharingSender -> SenderScreen(value.state, controller)
                 is RootState.SharingReceiver -> ReceiverScreen(value.state, controller)
+                is RootState.SharingContactVerification -> ContactVerificationScreen(value.state, controller)
             }
         }
     }
@@ -127,10 +128,42 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
             Column(Modifier.weight(1f)) { Text(stringResource(Res.string.files), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold); Text(stringResource(Res.string.local_storage), style = MaterialTheme.typography.bodySmall) }
             TextButton(settings) { Text(stringResource(Res.string.settings)) }; TextButton({ controller.lock() }) { Text(stringResource(Res.string.lock)) }
         }
-        if (windowClass == VeilWindowClass.Compact) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(createFolder, Modifier.weight(1f)) { Text(stringResource(Res.string.new_folder)) }; Button(controller::importFile, Modifier.weight(1f).testTag("import_action")) { Text(stringResource(Res.string.import_action)) }
-        } else Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(createFolder) { Text(stringResource(Res.string.new_folder)) }; Button(controller::importFile, Modifier.testTag("import_action")) { Text(stringResource(Res.string.import_file)) }
+        if (windowClass == VeilWindowClass.Compact) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(createFolder, Modifier.weight(1f)) { Text(stringResource(Res.string.new_folder)) }
+                Button(controller::importFile, Modifier.weight(1f).testTag("import_action")) { Text(stringResource(Res.string.import_action)) }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = controller::startSharingReceiver,
+                    modifier = Modifier.weight(1f).testTag("share_receive_action"),
+                ) { Text(stringResource(Res.string.share_receive)) }
+                Button(
+                    onClick = controller::startSharingSender,
+                    modifier = Modifier.weight(1f).testTag("share_send_action"),
+                ) { Text(stringResource(Res.string.share_sender_title)) }
+            }
+            OutlinedButton(
+                onClick = controller::startContactVerification,
+                modifier = Modifier.fillMaxWidth().testTag("share_verify_contact_action"),
+            ) { Text(stringResource(Res.string.share_verify_contact)) }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(createFolder) { Text(stringResource(Res.string.new_folder)) }
+                Button(controller::importFile, Modifier.testTag("import_action")) { Text(stringResource(Res.string.import_file)) }
+                OutlinedButton(
+                    onClick = controller::startContactVerification,
+                    modifier = Modifier.testTag("share_verify_contact_action"),
+                ) { Text(stringResource(Res.string.share_verify_contact)) }
+                OutlinedButton(
+                    onClick = controller::startSharingReceiver,
+                    modifier = Modifier.testTag("share_receive_action"),
+                ) { Text(stringResource(Res.string.share_receive)) }
+                Button(
+                    onClick = controller::startSharingSender,
+                    modifier = Modifier.testTag("share_send_action"),
+                ) { Text(stringResource(Res.string.share_sender_title)) }
+            }
         }
     }
 }
@@ -218,11 +251,14 @@ private fun formatSize(bytes: Long): String = when {
     else -> "${bytes / (1024L * 1024 * 1024)} GiB"
 }
 
+private fun formatFingerprint(value: String): String = value.uppercase().chunked(4).joinToString(" ")
+
 @Composable
 fun SenderScreen(state: SharingSenderState, controller: LocalAppController) {
     when (state) {
         is SharingSenderState.Preparing -> SenderPreparingScreen(state, controller)
         is SharingSenderState.Connecting -> SenderConnectingScreen(state, controller)
+        is SharingSenderState.VerificationRequired -> SenderVerificationScreen(state, controller)
         is SharingSenderState.Sending -> SenderProgressScreen(state.progress, controller)
         is SharingSenderState.Completed -> SenderCompletedScreen(controller)
         is SharingSenderState.Error -> SenderErrorScreen(state, controller)
@@ -232,25 +268,24 @@ fun SenderScreen(state: SharingSenderState, controller: LocalAppController) {
 
 @Composable
 private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controller: LocalAppController) {
-    var referenceCode by remember { mutableStateOf(state.referenceCode ?: "") }
-    var selectedFile by remember { mutableStateOf(state.selectedFile ?: "") }
+    var referenceCode by remember(state.referenceCode) { mutableStateOf(state.referenceCode ?: "") }
+    val selectedFile = state.selectedFile.orEmpty()
     val focusRequester = remember { FocusRequester() }
-    
+
     LaunchedEffect(Unit) { withFrameNanos { }; focusRequester.requestFocus() }
-    
+
     ElevatedCard(Modifier.widthIn(max = 520.dp)) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             Text(stringResource(Res.string.share_sender_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_sender_description))
             HorizontalDivider()
-            
-            // File selection
+
             Text(stringResource(Res.string.share_select_file), style = MaterialTheme.typography.titleSmall)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     value = selectedFile,
-                    onValueChange = { selectedFile = it },
+                    onValueChange = {},
                     label = { Text(stringResource(Res.string.share_file_selected)) },
                     enabled = false,
                     modifier = Modifier.weight(1f)
@@ -259,8 +294,7 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
                     Text(stringResource(Res.string.share_browse))
                 }
             }
-            
-            // Reference code input
+
             Text(stringResource(Res.string.share_reference_code), style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(
                 value = referenceCode,
@@ -268,14 +302,13 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
                 label = { Text(stringResource(Res.string.share_enter_code)) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { 
+                keyboardActions = KeyboardActions(onDone = {
                     controller.enterSharingReferenceCode(referenceCode)
                     controller.startSharingTransfer()
                 }),
                 modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
             )
-            
-            // Actions
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                     Text(stringResource(Res.string.cancel))
@@ -298,6 +331,71 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
 }
 
 @Composable
+private fun ContactVerificationScreen(state: SharingContactVerificationState, controller: LocalAppController) {
+    when (state) {
+        is SharingContactVerificationState.Entering -> ElevatedCard(Modifier.widthIn(max = 520.dp).testTag("share_contact_verification_entry")) {
+            Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(Res.string.share_verify_contact), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(Res.string.share_verify_contact_description))
+                OutlinedTextField(
+                    value = state.referenceCode,
+                    onValueChange = controller::enterContactVerificationReferenceCode,
+                    enabled = !state.busy,
+                    singleLine = true,
+                    label = { Text(stringResource(Res.string.share_reference_code)) },
+                    supportingText = { Text(stringResource(Res.string.share_reference_is_not_identity)) },
+                    modifier = Modifier.fillMaxWidth().testTag("share_contact_verification_code"),
+                )
+                state.error?.let { InlineError(it) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = controller::finishContactVerification, enabled = !state.busy, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(stringResource(Res.string.back)) }
+                    Button(onClick = controller::lookupContactForVerification, enabled = !state.busy && state.referenceCode.isNotBlank(), modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("share_contact_verification_lookup")) {
+                        if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(Res.string.share_check_identity))
+                    }
+                }
+            }
+        }
+        is SharingContactVerificationState.VerificationRequired -> {
+            var alias by remember(state.fingerprint) { mutableStateOf(state.existingAlias.orEmpty()) }
+            val isNew = state.reason == SharingVerificationReason.NEW_PEER
+            ElevatedCard(Modifier.widthIn(max = 560.dp).testTag("share_contact_verification_fingerprint")) {
+                Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                    Text(stringResource(Res.string.share_verify_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(if (isNew) Res.string.share_verify_new_description else Res.string.share_verify_changed_description), color = if (isNew) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+                    Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(stringResource(Res.string.share_fingerprint), style = MaterialTheme.typography.labelLarge)
+                            Text(formatFingerprint(state.fingerprint), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Text(stringResource(Res.string.share_verify_out_of_band), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(Res.string.share_reference_is_not_identity), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (isNew) OutlinedTextField(value = alias, onValueChange = { alias = it }, enabled = !state.busy, singleLine = true, label = { Text(stringResource(Res.string.share_contact_name)) }, modifier = Modifier.fillMaxWidth().testTag("share_contact_verification_alias"))
+                    else state.existingAlias?.let { Text(stringResource(Res.string.share_existing_contact, it)) }
+                    state.error?.let { InlineError(it) }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(onClick = controller::dismissContactVerification, enabled = !state.busy, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(stringResource(Res.string.back)) }
+                        Button(onClick = { controller.confirmContactVerification(alias) }, enabled = !state.busy && (!isNew || alias.isNotBlank()), modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("share_contact_verification_confirm")) {
+                            if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(Res.string.share_confirm_identity))
+                        }
+                    }
+                }
+            }
+        }
+        is SharingContactVerificationState.Completed -> ElevatedCard(Modifier.widthIn(max = 430.dp).testTag("share_contact_verification_complete")) {
+            Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary)
+                Text(stringResource(Res.string.share_contact_verified_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(Res.string.share_contact_verified_description, state.alias))
+                Button(onClick = controller::finishContactVerification, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(stringResource(Res.string.done)) }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SenderConnectingScreen(state: SharingSenderState.Connecting, controller: LocalAppController) {
     ElevatedCard(Modifier.widthIn(max = 430.dp)) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -305,9 +403,63 @@ private fun SenderConnectingScreen(state: SharingSenderState.Connecting, control
             Text(stringResource(Res.string.share_connecting_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_connecting_description, state.referenceCode.value))
             CircularProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 40.dp))
+            OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.cancel))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SenderVerificationScreen(state: SharingSenderState.VerificationRequired, controller: LocalAppController) {
+    var alias by remember(state.fingerprint) { mutableStateOf(state.existingAlias.orEmpty()) }
+    val isNew = state.reason == SharingVerificationReason.NEW_PEER
+    ElevatedCard(Modifier.widthIn(max = 560.dp).testTag("share_verification_screen")) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.share_verify_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(if (isNew) Res.string.share_verify_new_description else Res.string.share_verify_changed_description),
+                color = if (isNew) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+            )
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(Res.string.share_fingerprint), style = MaterialTheme.typography.labelLarge)
+                    Text(formatFingerprint(state.fingerprint), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Text(stringResource(Res.string.share_verify_out_of_band), style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(Res.string.share_reference_is_not_identity), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (isNew) {
+                OutlinedTextField(
+                    value = alias,
+                    onValueChange = { alias = it },
+                    enabled = !state.busy,
+                    singleLine = true,
+                    label = { Text(stringResource(Res.string.share_contact_name)) },
+                    modifier = Modifier.fillMaxWidth().testTag("share_verification_alias"),
+                )
+            } else {
+                state.existingAlias?.let { Text(stringResource(Res.string.share_existing_contact, it), style = MaterialTheme.typography.bodyMedium) }
+            }
+            state.error?.let { InlineError(it) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                    Text(stringResource(Res.string.cancel))
+                OutlinedButton(
+                    onClick = controller::dismissSharingVerification,
+                    enabled = !state.busy,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                ) { Text(stringResource(Res.string.back)) }
+                Button(
+                    onClick = { controller.confirmSharingPeer(alias) },
+                    enabled = !state.busy && (!isNew || alias.isNotBlank()),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("share_verification_confirm"),
+                ) {
+                    if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else Text(stringResource(Res.string.share_confirm_identity))
                 }
             }
         }
@@ -322,30 +474,22 @@ private fun SenderProgressScreen(progress: SharingProgress, controller: LocalApp
             Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             Text(stringResource(Res.string.share_sending_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_sending_description))
-            
+
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (fraction == null) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                } else {
-                    LinearProgressIndicator(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth())
-                }
+                if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                else LinearProgressIndicator(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (progress.totalBytes == 0L) 
-                            "Enviando ${formatSize(progress.bytesTransferred)}" 
-                        else 
-                            "${formatSize(progress.bytesTransferred)} de ${formatSize(progress.totalBytes)}",
+                        if (progress.totalBytes == 0L) "Enviando ${formatSize(progress.bytesTransferred)}"
+                        else "${formatSize(progress.bytesTransferred)} de ${formatSize(progress.totalBytes)}",
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text("${progress.currentChunk}/${progress.totalChunks}", style = MaterialTheme.typography.bodySmall)
                 }
             }
-            
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                    Text(stringResource(Res.string.cancel))
-                }
+            OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.cancel))
             }
         }
     }
@@ -358,7 +502,7 @@ private fun SenderCompletedScreen(controller: LocalAppController) {
             Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
             Text(stringResource(Res.string.share_complete_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_complete_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -377,7 +521,7 @@ private fun SenderErrorScreen(state: SharingSenderState.Error, controller: Local
                         Text(stringResource(Res.string.retry))
                     }
                 }
-                Button(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Button(onClick = { controller.finishSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                     Text(stringResource(Res.string.close))
                 }
             }
@@ -391,7 +535,7 @@ private fun SenderCancelledScreen(controller: LocalAppController) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text(stringResource(Res.string.share_cancelled_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_cancelled_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -419,10 +563,8 @@ private fun ReceiverWaitingScreen(state: SharingReceiverState.Waiting, controlle
             Text(stringResource(Res.string.share_receiver_waiting_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_receiver_waiting_description, state.referenceCode.value))
             CircularProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 40.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                    Text(stringResource(Res.string.cancel))
-                }
+            OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.cancel))
             }
         }
     }
@@ -435,31 +577,22 @@ private fun ReceiverIncomingScreen(state: SharingReceiverState.Incoming, control
             Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             Text(stringResource(Res.string.share_incoming_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_incoming_description, state.senderIdentity))
-            
+
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(state.fileName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
                 Text(formatSize(state.fileSize), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(
-                    onClick = { 
-                        // TODO: Implement reject
-                        controller.cancelSharing()
-                    },
+                    onClick = { controller.rejectIncomingSharing() },
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text(stringResource(Res.string.share_reject))
-                }
+                ) { Text(stringResource(Res.string.share_reject)) }
                 Button(
-                    onClick = { 
-                        // TODO: Implement accept
-                    },
+                    onClick = { controller.acceptIncomingSharing() },
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp)
-                ) {
-                    Text(stringResource(Res.string.share_accept))
-                }
+                ) { Text(stringResource(Res.string.share_accept)) }
             }
         }
     }
@@ -473,30 +606,22 @@ private fun ReceiverProgressScreen(progress: SharingProgress, controller: LocalA
             Text(stringResource(Res.string.share_title), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             Text(stringResource(Res.string.share_receiving_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_receiving_description))
-            
+
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (fraction == null) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                } else {
-                    LinearProgressIndicator(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth())
-                }
+                if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                else LinearProgressIndicator(fraction.coerceIn(0f, 1f), Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (progress.totalBytes == 0L) 
-                            "Recibiendo ${formatSize(progress.bytesTransferred)}" 
-                        else 
-                            "${formatSize(progress.bytesTransferred)} de ${formatSize(progress.totalBytes)}",
+                        if (progress.totalBytes == 0L) "Recibiendo ${formatSize(progress.bytesTransferred)}"
+                        else "${formatSize(progress.bytesTransferred)} de ${formatSize(progress.totalBytes)}",
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text("${progress.currentChunk}/${progress.totalChunks}", style = MaterialTheme.typography.bodySmall)
                 }
             }
-            
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                    Text(stringResource(Res.string.cancel))
-                }
+            OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(Res.string.cancel))
             }
         }
     }
@@ -509,7 +634,7 @@ private fun ReceiverCompletedScreen(controller: LocalAppController) {
             Text("✓", style = MaterialTheme.typography.displayLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
             Text(stringResource(Res.string.share_complete_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_receive_complete_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -522,7 +647,7 @@ private fun ReceiverErrorScreen(state: SharingReceiverState.Error, controller: L
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(stringResource(Res.string.share_error_title), style = MaterialTheme.typography.headlineSmall)
             Text(state.message)
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.close))
             }
         }
@@ -535,7 +660,7 @@ private fun ReceiverRejectedScreen(controller: LocalAppController) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text(stringResource(Res.string.share_rejected_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_rejected_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }
@@ -548,7 +673,7 @@ private fun ReceiverCancelledScreen(controller: LocalAppController) {
         Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text(stringResource(Res.string.share_cancelled_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(stringResource(Res.string.share_cancelled_description))
-            Button(onClick = { controller.cancelSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Button(onClick = { controller.finishSharing() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text(stringResource(Res.string.done))
             }
         }

@@ -1,7 +1,11 @@
 package dev.veilshare.app
 
+import dev.veilshare.core.contacts.ContactVerificationMethod
 import dev.veilshare.core.contacts.LookupTrustResolver
+import dev.veilshare.core.contacts.LookupTrustResult
+import dev.veilshare.core.contacts.PeerTrustDecision
 import dev.veilshare.core.contacts.TrustedContactManager
+import dev.veilshare.core.contacts.VerificationReason
 import dev.veilshare.core.crypto.AuthenticatedCipher
 import dev.veilshare.core.crypto.Ed25519Signer
 import dev.veilshare.core.crypto.HandshakeProtocol
@@ -14,6 +18,7 @@ import dev.veilshare.core.identity.SharingIdentityManager
 import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.LocalPersonaId
+import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.MessageType
 import dev.veilshare.core.model.OpaqueIds
 import dev.veilshare.core.model.RandomBytesSource
@@ -38,12 +43,15 @@ import dev.veilshare.core.transfer.TransferSource
 import dev.veilshare.core.transfer.TrustedOutboundHandshakeCompleter
 import dev.veilshare.core.transfer.TrustedOutboundSessionStarter
 import dev.veilshare.core.vault.VaultHandle
+import dev.veilshare.ui.features.SharingPeerLookupResult
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingProgress
 import dev.veilshare.ui.features.SharingRuntime
 import dev.veilshare.ui.features.SharingRuntimeActivation
 import dev.veilshare.ui.features.SharingRuntimeEvent
 import dev.veilshare.ui.features.SharingSendResult
+import dev.veilshare.ui.features.SharingVerificationReason
+import dev.veilshare.ui.features.SharingVerificationResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -75,7 +83,7 @@ class DefaultSharingRuntime(
     private val contextBindings: SharingContextBindingManager,
     private val identities: SharingIdentityManager,
     private val presence: SharingPresenceManager,
-    contacts: TrustedContactManager,
+    private val contacts: TrustedContactManager,
     handshake: HandshakeProtocol,
     signer: Ed25519Signer,
     keyAgreement: X25519KeyAgreement,
@@ -137,6 +145,7 @@ class DefaultSharingRuntime(
     private var activeContext: SharingContextId? = null
     private var activeVault: VaultHandle? = null
     private var currentOutgoing: OutgoingSharingTransfer? = null
+    private var pendingVerification: PeerTrustDecision.NeedsVerification? = null
     private var closed = false
 
     init {
@@ -155,6 +164,7 @@ class DefaultSharingRuntime(
             stateMutex.withLock {
                 activeContext = contextId
                 activeVault = vault
+                pendingVerification = null
             }
             inbound.activate(contextId, vault)
             SharingRuntimeActivation.Ready(registered.presence.referenceCode)
@@ -162,9 +172,62 @@ class DefaultSharingRuntime(
             stateMutex.withLock {
                 activeContext = null
                 activeVault = null
+                pendingVerification = null
             }
             runCatching { signalingClient.close() }
             SharingRuntimeActivation.Unavailable("No se pudo activar el canal de compartir.")
+        }
+    }
+
+    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
+        val contextId = stateMutex.withLock {
+            pendingVerification = null
+            activeContext
+        } ?: return SharingPeerLookupResult.Unavailable("Compartir no está activo.")
+        val localIdentity = identities.publicIdentity(contextId)
+            ?: return SharingPeerLookupResult.Unavailable("No se encontró la identidad local de compartir.")
+        return try {
+            val response = signalingClient.lookup(
+                LookupRequest(
+                    referenceCode = referenceCode,
+                    requestorSharingIdentityId = localIdentity.identityId,
+                ),
+            )
+            when (val resolved = LookupTrustResolver(contacts).resolve(referenceCode, response)) {
+                is LookupTrustResult.Unavailable -> {
+                    stateMutex.withLock { pendingVerification = null }
+                    SharingPeerLookupResult.Unavailable("No hay un dispositivo disponible con ese código.")
+                }
+                is LookupTrustResult.Peer -> when (val decision = resolved.decision) {
+                    is PeerTrustDecision.Trusted -> {
+                        stateMutex.withLock { pendingVerification = null }
+                        SharingPeerLookupResult.Trusted(decision.contact.alias)
+                    }
+                    is PeerTrustDecision.NeedsVerification -> {
+                        stateMutex.withLock { pendingVerification = decision }
+                        SharingPeerLookupResult.NeedsVerification(
+                            fingerprint = decision.candidate.fingerprint.value,
+                            reason = when (decision.reason) {
+                                VerificationReason.NEW_PEER -> SharingVerificationReason.NEW_PEER
+                                VerificationReason.IDENTITY_CHANGED_FOR_ROUTING_CODE -> SharingVerificationReason.IDENTITY_CHANGED
+                            },
+                            existingAlias = decision.existingContact?.alias,
+                        )
+                    }
+                    is PeerTrustDecision.KeyMismatch -> {
+                        stateMutex.withLock { pendingVerification = null }
+                        SharingPeerLookupResult.KeyMismatch(
+                            expectedFingerprint = decision.contact.fingerprint.value,
+                            presentedFingerprint = decision.presentedFingerprint.value,
+                        )
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            stateMutex.withLock { pendingVerification = null }
+            SharingPeerLookupResult.Failed("No se pudo comprobar la identidad del contacto.")
         }
     }
 
@@ -187,18 +250,31 @@ class DefaultSharingRuntime(
         var transferCrypto: EstablishedTransferCrypto? = null
         var outgoingTransfer: OutgoingSharingTransfer? = null
         try {
-            val contextId = stateMutex.withLock { activeContext }
-                ?: return SharingSendResult.Unavailable("Compartir no está activo.")
+            val contextId = stateMutex.withLock {
+                pendingVerification = null
+                activeContext
+            } ?: return SharingSendResult.Unavailable("Compartir no está activo.")
 
             val start = starter.start(contextId, referenceCode)
             val started = when (start) {
-                is OutboundSessionStartResult.NeedsVerification ->
-                    return SharingSendResult.NeedsVerification(start.decision.candidate.fingerprint.value)
-                is OutboundSessionStartResult.KeyMismatch ->
+                is OutboundSessionStartResult.NeedsVerification -> {
+                    stateMutex.withLock { pendingVerification = start.decision }
+                    return SharingSendResult.NeedsVerification(
+                        fingerprint = start.decision.candidate.fingerprint.value,
+                        reason = when (start.decision.reason) {
+                            VerificationReason.NEW_PEER -> SharingVerificationReason.NEW_PEER
+                            VerificationReason.IDENTITY_CHANGED_FOR_ROUTING_CODE -> SharingVerificationReason.IDENTITY_CHANGED
+                        },
+                        existingAlias = start.decision.existingContact?.alias,
+                    )
+                }
+                is OutboundSessionStartResult.KeyMismatch -> {
+                    stateMutex.withLock { pendingVerification = null }
                     return SharingSendResult.KeyMismatch(
                         expectedFingerprint = start.decision.contact.fingerprint.value,
                         presentedFingerprint = start.decision.presentedFingerprint.value,
                     )
+                }
                 is OutboundSessionStartResult.Unavailable ->
                     return SharingSendResult.Unavailable("El destinatario no está disponible.")
                 is OutboundSessionStartResult.Started -> start
@@ -301,6 +377,39 @@ class DefaultSharingRuntime(
         }
     }
 
+    override suspend fun confirmPendingPeer(alias: String): SharingVerificationResult {
+        val pending = stateMutex.withLock { pendingVerification }
+            ?: return SharingVerificationResult.Failed("No hay una verificación pendiente.")
+        return try {
+            when (pending.reason) {
+                VerificationReason.NEW_PEER -> contacts.addVerified(
+                    alias = alias,
+                    candidate = pending.candidate,
+                    verificationMethod = ContactVerificationMethod.MANUAL_FINGERPRINT,
+                )
+                VerificationReason.IDENTITY_CHANGED_FOR_ROUTING_CODE -> {
+                    val existing = pending.existingContact
+                        ?: return SharingVerificationResult.Failed("No se pudo verificar el contacto existente.")
+                    contacts.confirmIdentityChange(
+                        contactId = existing.contactId,
+                        candidate = pending.candidate,
+                        verificationMethod = ContactVerificationMethod.MANUAL_FINGERPRINT,
+                    )
+                }
+            }
+            stateMutex.withLock {
+                if (pendingVerification === pending) pendingVerification = null
+            }
+            SharingVerificationResult.Verified
+        } catch (_: Throwable) {
+            SharingVerificationResult.Failed("No se pudo guardar la verificación.")
+        }
+    }
+
+    override suspend fun dismissPendingPeerVerification() {
+        stateMutex.withLock { pendingVerification = null }
+    }
+
     /**
      * DATA sending and post-ACCEPT control reception must run concurrently. PR #3's
      * state-aware sender stops at the next DATA/COMPLETE boundary only after
@@ -348,6 +457,7 @@ class DefaultSharingRuntime(
             val value = activeContext
             activeContext = null
             activeVault = null
+            pendingVerification = null
             value
         }
         runCatching { cancelCurrent() }
@@ -365,6 +475,7 @@ class DefaultSharingRuntime(
         sessionInboxes.values.forEach { it.close() }
         sessionInboxes.clear()
         earlyRelays.clear()
+        pendingVerification = null
         inbound.close()
     }
 

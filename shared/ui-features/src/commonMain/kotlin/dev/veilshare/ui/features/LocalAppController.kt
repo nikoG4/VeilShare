@@ -162,6 +162,7 @@ class LocalAppController(
         ownSharingReferenceCode = null
         scope.launch {
             withContext(NonCancellable + workDispatcher) {
+                runCatching { sharingRuntime.dismissPendingPeerVerification() }
                 runCatching { sharingRuntime.cancelCurrent() }
                 runCatching { sharingRuntime.deactivate() }
             }
@@ -233,10 +234,15 @@ class LocalAppController(
                 mutableState.value = when (result) {
                     SharingSendResult.Completed -> RootState.SharingSender(SharingSenderState.Completed)
                     is SharingSendResult.NeedsVerification -> RootState.SharingSender(
-                        SharingSenderState.Error("Verifica la identidad del destinatario: ${result.fingerprint}", canRetry = false),
+                        SharingSenderState.VerificationRequired(
+                            referenceCode = referenceCode,
+                            fingerprint = result.fingerprint,
+                            reason = result.reason,
+                            existingAlias = result.existingAlias,
+                        ),
                     )
                     is SharingSendResult.KeyMismatch -> RootState.SharingSender(
-                        SharingSenderState.Error("La identidad del contacto cambió. Verifica nuevamente el contacto.", canRetry = false),
+                        SharingSenderState.Error("La clave del contacto no coincide con la identidad guardada. No se enviará nada.", canRetry = false),
                     )
                     is SharingSendResult.Unavailable -> RootState.SharingSender(
                         SharingSenderState.Error(result.reason ?: "Compartir no está disponible.", canRetry = false),
@@ -256,10 +262,179 @@ class LocalAppController(
         }
     }
 
+    fun confirmSharingPeer(alias: String) {
+        val verification = (mutableState.value as? RootState.SharingSender)?.state as? SharingSenderState.VerificationRequired ?: return
+        if (verification.busy || sharingJob?.isActive == true) return
+        val safeAlias = when (verification.reason) {
+            SharingVerificationReason.NEW_PEER -> alias.trim()
+            SharingVerificationReason.IDENTITY_CHANGED -> verification.existingAlias ?: alias.trim()
+        }
+        if (safeAlias.isBlank()) {
+            mutableState.value = RootState.SharingSender(verification.copy(error = "Escribe un nombre para este contacto."))
+            return
+        }
+        mutableState.value = RootState.SharingSender(verification.copy(busy = true, error = null))
+        sharingJob = scope.launch {
+            try {
+                when (val result = withContext(workDispatcher) { sharingRuntime.confirmPendingPeer(safeAlias) }) {
+                    SharingVerificationResult.Verified -> mutableState.value = RootState.SharingSender(
+                        SharingSenderState.Preparing(referenceCode = verification.referenceCode.value),
+                    )
+                    is SharingVerificationResult.Failed -> mutableState.value = RootState.SharingSender(
+                        verification.copy(busy = false, error = result.reason ?: "No se pudo guardar la verificación."),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = RootState.SharingSender(
+                    verification.copy(busy = false, error = "No se pudo guardar la verificación."),
+                )
+            } finally {
+                sharingJob = null
+            }
+        }
+    }
+
+    fun dismissSharingVerification() {
+        val verification = (mutableState.value as? RootState.SharingSender)?.state as? SharingSenderState.VerificationRequired ?: return
+        if (verification.busy) return
+        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
+        mutableState.value = RootState.SharingSender(
+            SharingSenderState.Preparing(referenceCode = verification.referenceCode.value),
+        )
+    }
+
+    fun startContactVerification() {
+        if (mutableState.value !is RootState.Unlocked) return
+        if (ownSharingReferenceCode == null) {
+            mutableState.value = RootState.SharingContactVerification(
+                SharingContactVerificationState.Entering(error = "Compartir no está disponible en esta sesión."),
+            )
+            return
+        }
+        mutableState.value = RootState.SharingContactVerification(SharingContactVerificationState.Entering())
+    }
+
+    fun enterContactVerificationReferenceCode(referenceCode: String) {
+        val entering = (mutableState.value as? RootState.SharingContactVerification)?.state as? SharingContactVerificationState.Entering ?: return
+        if (entering.busy) return
+        mutableState.value = RootState.SharingContactVerification(
+            entering.copy(referenceCode = referenceCode, error = null),
+        )
+    }
+
+    fun lookupContactForVerification() {
+        val entering = (mutableState.value as? RootState.SharingContactVerification)?.state as? SharingContactVerificationState.Entering ?: return
+        if (entering.busy || sharingJob?.isActive == true) return
+        val referenceCode = try {
+            ReferenceCodes.parse(entering.referenceCode)
+        } catch (_: IllegalArgumentException) {
+            mutableState.value = RootState.SharingContactVerification(
+                entering.copy(error = "El código de referencia no es válido."),
+            )
+            return
+        }
+        mutableState.value = RootState.SharingContactVerification(entering.copy(busy = true, error = null))
+        sharingJob = scope.launch {
+            try {
+                mutableState.value = when (val result = withContext(workDispatcher) { sharingRuntime.inspectPeer(referenceCode) }) {
+                    is SharingPeerLookupResult.Trusted -> RootState.SharingContactVerification(
+                        SharingContactVerificationState.Completed(result.alias),
+                    )
+                    is SharingPeerLookupResult.NeedsVerification -> RootState.SharingContactVerification(
+                        SharingContactVerificationState.VerificationRequired(
+                            referenceCode = referenceCode,
+                            fingerprint = result.fingerprint,
+                            reason = result.reason,
+                            existingAlias = result.existingAlias,
+                        ),
+                    )
+                    is SharingPeerLookupResult.KeyMismatch -> RootState.SharingContactVerification(
+                        SharingContactVerificationState.Entering(
+                            referenceCode = referenceCode.value,
+                            error = "La clave presentada no coincide con la identidad ya guardada. No se modificó la confianza.",
+                        ),
+                    )
+                    is SharingPeerLookupResult.Unavailable -> RootState.SharingContactVerification(
+                        SharingContactVerificationState.Entering(referenceCode.value, error = result.reason ?: "El contacto no está disponible."),
+                    )
+                    is SharingPeerLookupResult.Failed -> RootState.SharingContactVerification(
+                        SharingContactVerificationState.Entering(referenceCode.value, error = result.reason ?: "No se pudo comprobar el contacto."),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = RootState.SharingContactVerification(
+                    SharingContactVerificationState.Entering(referenceCode.value, error = "No se pudo comprobar el contacto."),
+                )
+            } finally {
+                sharingJob = null
+            }
+        }
+    }
+
+    fun confirmContactVerification(alias: String) {
+        val verification = (mutableState.value as? RootState.SharingContactVerification)?.state as? SharingContactVerificationState.VerificationRequired ?: return
+        if (verification.busy || sharingJob?.isActive == true) return
+        val safeAlias = when (verification.reason) {
+            SharingVerificationReason.NEW_PEER -> alias.trim()
+            SharingVerificationReason.IDENTITY_CHANGED -> verification.existingAlias ?: alias.trim()
+        }
+        if (safeAlias.isBlank()) {
+            mutableState.value = RootState.SharingContactVerification(
+                verification.copy(error = "Escribe un nombre para este contacto."),
+            )
+            return
+        }
+        mutableState.value = RootState.SharingContactVerification(verification.copy(busy = true, error = null))
+        sharingJob = scope.launch {
+            try {
+                when (val result = withContext(workDispatcher) { sharingRuntime.confirmPendingPeer(safeAlias) }) {
+                    SharingVerificationResult.Verified -> mutableState.value = RootState.SharingContactVerification(
+                        SharingContactVerificationState.Completed(safeAlias),
+                    )
+                    is SharingVerificationResult.Failed -> mutableState.value = RootState.SharingContactVerification(
+                        verification.copy(busy = false, error = result.reason ?: "No se pudo guardar la verificación."),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = RootState.SharingContactVerification(
+                    verification.copy(busy = false, error = "No se pudo guardar la verificación."),
+                )
+            } finally {
+                sharingJob = null
+            }
+        }
+    }
+
+    fun dismissContactVerification() {
+        val verification = (mutableState.value as? RootState.SharingContactVerification)?.state as? SharingContactVerificationState.VerificationRequired ?: return
+        if (verification.busy) return
+        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
+        mutableState.value = RootState.SharingContactVerification(
+            SharingContactVerificationState.Entering(referenceCode = verification.referenceCode.value),
+        )
+    }
+
+    fun finishContactVerification() {
+        sharingJob?.cancel(); sharingJob = null
+        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
+        returnToBrowser()
+    }
+
     fun cancelSharing() {
         sharingJob?.cancel(); sharingJob = null
         closeSelectedSharingFileAsync()
-        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.cancelCurrent() } } }
+        scope.launch {
+            withContext(NonCancellable + workDispatcher) {
+                runCatching { sharingRuntime.dismissPendingPeerVerification() }
+                runCatching { sharingRuntime.cancelCurrent() }
+            }
+        }
         val current = mutableState.value
         mutableState.value = when (current) {
             is RootState.SharingSender -> RootState.SharingSender(SharingSenderState.Cancelled)
@@ -270,6 +445,7 @@ class LocalAppController(
 
     fun finishSharing() {
         closeSelectedSharingFileAsync()
+        scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
         returnToBrowser()
     }
 
@@ -285,14 +461,17 @@ class LocalAppController(
 
     fun acceptIncomingSharing() {
         if ((mutableState.value as? RootState.SharingReceiver)?.state !is SharingReceiverState.Incoming) return
+        if (sharingJob?.isActive == true) return
         sharingJob = scope.launch {
             try { withContext(workDispatcher) { sharingRuntime.acceptIncoming() } }
             catch (_: Exception) { mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("No se pudo aceptar el archivo.")) }
+            finally { sharingJob = null }
         }
     }
 
     fun rejectIncomingSharing() {
         if ((mutableState.value as? RootState.SharingReceiver)?.state !is SharingReceiverState.Incoming) return
+        if (sharingJob?.isActive == true) return
         sharingJob = scope.launch {
             try { withContext(workDispatcher) { sharingRuntime.rejectIncoming() }; mutableState.value = RootState.SharingReceiver(SharingReceiverState.Rejected) }
             catch (_: Exception) { mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("No se pudo rechazar el archivo.")) }
