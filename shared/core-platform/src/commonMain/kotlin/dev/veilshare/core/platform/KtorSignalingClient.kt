@@ -20,9 +20,11 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
@@ -44,18 +46,28 @@ class KtorSignalingClient(
     private val events = MutableSharedFlow<SignalingEnvelope>(extraBufferCapacity = 64)
     private val pending = mutableMapOf<MessageId, CompletableDeferred<SignalingEnvelope>>()
     private val pendingMutex = Mutex()
+    private val connectionMutex = Mutex()
     private var scope: CoroutineScope? = null
     private var session: DefaultClientWebSocketSession? = null
 
     override val incoming: Flow<SignalingEnvelope> = events
 
     override suspend fun connect() {
-        check(session == null) { "Client is already connected" }
-        val opened = httpClient.webSocketSession { url(endpointUrl) }
-        session = opened
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { clientScope ->
-            clientScope.launch {
-                receiveLoop(opened)
+        connectionMutex.withLock {
+            val current = session
+            if (current?.coroutineContext?.get(Job)?.isActive == true) return
+
+            scope?.cancel()
+            scope = null
+            runCatching { current?.close() }
+            session = null
+
+            val opened = httpClient.webSocketSession { url(endpointUrl) }
+            session = opened
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { clientScope ->
+                clientScope.launch {
+                    receiveLoop(opened)
+                }
             }
         }
     }
@@ -82,18 +94,20 @@ class KtorSignalingClient(
     }
 
     override suspend fun close() {
-        val opened = session
-        session = null
-        scope?.cancel()
-        scope = null
-        pendingMutex.withLock {
-            pending.values.forEach { it.cancel() }
-            pending.clear()
+        val (opened, oldScope) = connectionMutex.withLock {
+            val active = session
+            val activeScope = scope
+            session = null
+            scope = null
+            active to activeScope
         }
+        oldScope?.cancel()
+        failPending(CancellationException("Signaling client closed"))
         opened?.close()
     }
 
     private suspend fun receiveLoop(opened: DefaultClientWebSocketSession) {
+        var terminalFailure: Throwable? = null
         try {
             for (frame in opened.incoming) {
                 if (frame !is Frame.Text) continue
@@ -105,12 +119,24 @@ class KtorSignalingClient(
                     events.emit(envelope)
                 }
             }
+            terminalFailure = SignalingConnectionClosedException("Signaling connection closed")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (failure: Throwable) {
-            pendingMutex.withLock {
-                pending.values.forEach { it.completeExceptionally(failure) }
-                pending.clear()
+            terminalFailure = failure
+        } finally {
+            connectionMutex.withLock {
+                if (session === opened) session = null
             }
+            terminalFailure?.let { failPending(it) }
         }
+    }
+
+    private suspend fun failPending(failure: Throwable) {
+        val waiting = pendingMutex.withLock {
+            pending.values.toList().also { pending.clear() }
+        }
+        waiting.forEach { it.completeExceptionally(failure) }
     }
 
     private suspend inline fun <reified T> sendRequest(type: MessageType, payload: T): SignalingEnvelope {
@@ -134,8 +160,18 @@ class KtorSignalingClient(
         )
 
     private suspend fun sendEnvelope(envelope: SignalingEnvelope) {
-        val opened = checkNotNull(session) { "Client is not connected" }
-        opened.send(Frame.Text(json.encodeToString(envelope)))
+        val opened = connectionMutex.withLock { session }
+            ?: throw SignalingConnectionClosedException("Signaling client is not connected")
+        try {
+            opened.send(Frame.Text(json.encodeToString(envelope)))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            connectionMutex.withLock {
+                if (session === opened) session = null
+            }
+            throw SignalingConnectionClosedException("Signaling send failed", failure)
+        }
     }
 
     private fun SignalingEnvelope.asClientException(): SignalingClientException {
@@ -145,3 +181,4 @@ class KtorSignalingClient(
 }
 
 class SignalingClientException(val error: ErrorMessage) : RuntimeException(error.details)
+class SignalingConnectionClosedException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
