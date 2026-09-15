@@ -1,5 +1,6 @@
 package dev.veilshare.signaling
 
+import dev.veilshare.core.model.ConnectionId
 import dev.veilshare.core.model.ErrorCode
 import dev.veilshare.core.model.ErrorMessage
 import dev.veilshare.core.model.LookupRequest
@@ -13,20 +14,22 @@ import dev.veilshare.core.model.RelayRequest
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.model.SharingProtocol
 import dev.veilshare.core.model.UnregisterRequest
-import dev.veilshare.core.model.ConnectionId
 import io.ktor.server.application.Application
+import io.ktor.server.application.call
 import io.ktor.server.application.install
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 class SignalingServerState(
     clock: SignalingClock = SignalingClock { System.currentTimeMillis() },
@@ -57,6 +60,9 @@ private val json = Json {
 fun Application.signalingModule(state: SignalingServerState = SignalingServerState()) {
     install(WebSockets)
     routing {
+        get("/healthz") {
+            call.respondText("ok")
+        }
         webSocket("/v1/ws") {
             val connectionId = ConnectionId(UUID.randomUUID().toString())
             state.sockets[connectionId] = this
