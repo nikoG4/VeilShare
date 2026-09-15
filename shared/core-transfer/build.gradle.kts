@@ -15,8 +15,14 @@ kotlin {
             implementation(libs.serialization.core)
             implementation(libs.serialization.json)
         }
+        val desktopMain by getting {
+            dependencies {
+                implementation(project(":shared:core-crypto"))
+            }
+        }
         val desktopTest by getting {
             dependsOn(sourceSets["commonTest"]!!)
+            dependsOn(sourceSets["desktopMain"]!!)
             dependencies {
                 implementation(libs.kotlin.test)
                 implementation(libs.coroutines.test)

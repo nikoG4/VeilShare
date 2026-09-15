@@ -1,27 +1,46 @@
 package dev.veilshare.core.transfer
 
-import dev.veilshare.core.crypto.AuthenticatedCipher
 import dev.veilshare.core.crypto.Nonce
-import dev.veilshare.core.crypto.SensitiveBytes
+import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferId
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.TimeSource
+
+fun interface TransferClock {
+    fun nowMillis(): Long
+}
+
+private object MonotonicTransferClock : TransferClock {
+    private val origin = TimeSource.Monotonic.markNow()
+    override fun nowMillis(): Long = origin.elapsedNow().inWholeMilliseconds
+}
 
 interface TransferDecryptor {
     suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce): ByteArray
+
+    suspend fun decrypt(ciphertext: ByteArray, nonce: Nonce, aad: ByteArray): ByteArray {
+        throw IllegalStateException("AAD-aware transfer decryption is required")
+    }
 }
 
 interface TransferReceiver {
     suspend fun receive(transferData: TransferData): ReceiveResult
-    suspend fun getImportSource(transferId: TransferId, fileId: dev.veilshare.core.model.FileId): TransferImportSource
+    suspend fun getImportSource(transferId: TransferId, fileId: FileId): TransferImportSource
     fun getProgress(transferId: TransferId): StateFlow<TransferReceiverProgress?>
+
+    /**
+     * Aborts a buffered transfer by its protocol hash. Importing transfers are not
+     * abortable here: vault import owns the read handle until it closes.
+     */
+    suspend fun abort(transferIdHash: String, reason: String): Boolean
+
+    /** Opportunistically removes idle/over-age transfers and returns the count removed. */
+    suspend fun sweepExpired(): Int
 }
 
 sealed interface ReceiveResult {
@@ -39,7 +58,7 @@ sealed interface TransferReceiverProgress {
 
 interface TransferImportSource {
     val transferId: TransferId
-    val fileId: dev.veilshare.core.model.FileId
+    val fileId: FileId
     val displayName: String
     val mimeHint: String?
     val sizeHint: Long
@@ -63,41 +82,81 @@ enum class TransferStateEnum {
     NEW,
     RECEIVING,
     COMPLETE,
+    IMPORTING,
     CANCELLED,
-    FAILED
+    FAILED,
 }
 
 class InMemoryTransferReceiver(
     private val decryptor: TransferDecryptor,
     private val config: TransferConfig = TransferConfig(),
+    private val clock: TransferClock = MonotonicTransferClock,
 ) : TransferReceiver {
 
     private val activeTransfers = mutableMapOf<String, TransferState>()
-    private val progressFlows = mutableMapOf<String, MutableStateFlow<TransferReceiverProgress?>>()
     private val mapMutex = newMutex()
 
+    // Immutable-map snapshots make non-suspending getProgress() safe across platforms.
+    private val progressRegistry =
+        MutableStateFlow<Map<String, MutableStateFlow<TransferReceiverProgress?>>>(emptyMap())
+
     override suspend fun receive(transferData: TransferData): ReceiveResult {
+        // A peer that disappears after one fragment must not permanently consume the very
+        // small active-transfer budget. Cleanup is cheap because the map is intentionally tiny.
+        sweepExpired()
+        validateBeforeAllocation(transferData)?.let { return ReceiveResult.Error(it) }
+
         val transferIdHash = transferData.transferIdHash
-        return mapMutex.withLock {
-            val state = activeTransfers.getOrPut(transferIdHash) {
-                TransferState(
-                    transferIdHash = transferIdHash,
-                    fileIdHash = transferData.fileIdHash,
-                    totalChunks = transferData.totalChunks,
-                    config = config,
-                    progressFlow = getOrCreateProgressFlow(transferIdHash),
-                )
+        var capacityExceeded = false
+        val now = clock.nowMillis()
+        val state = mapMutex.withLock {
+            activeTransfers[transferIdHash] ?: run {
+                if (activeTransfers.size >= config.maxActiveTransfers) {
+                    capacityExceeded = true
+                    null
+                } else {
+                    TransferState(
+                        transferIdHash = transferIdHash,
+                        fileIdHash = transferData.fileIdHash,
+                        protocolVersion = transferData.protocolVersion,
+                        totalChunks = transferData.totalChunks,
+                        createdAtMillis = now,
+                        progressFlow = getOrCreateProgressFlow(transferIdHash),
+                    ).also { activeTransfers[transferIdHash] = it }
+                }
             }
-            state.processChunk(transferData, decryptor)
         }
+
+        if (capacityExceeded || state == null) {
+            return ReceiveResult.Error(TransferError.TooManyActiveTransfers(config.maxActiveTransfers))
+        }
+
+        // Per-transfer locking happens inside TransferState. Do not hold mapMutex while
+        // authenticating or processing a chunk, otherwise one slow transfer blocks all peers.
+        val result = state.processChunk(transferData, decryptor)
+        if (result is ReceiveResult.Error && state.isFailed()) {
+            cleanupTransfer(transferIdHash, state)
+        }
+        return result
     }
 
-    override suspend fun getImportSource(transferId: TransferId, fileId: dev.veilshare.core.model.FileId): TransferImportSource {
+    override suspend fun getImportSource(transferId: TransferId, fileId: FileId): TransferImportSource {
         val transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray())
-        return mapMutex.withLock {
-            val state = activeTransfers.get(transferIdHash) ?: throw IllegalStateException("Transfer not found: $transferIdHash")
-            TransferImportSourceImpl(state, fileId)
-        }
+        val state = mapMutex.withLock {
+            activeTransfers[transferIdHash]
+        } ?: throw IllegalStateException("Transfer not found: $transferIdHash")
+
+        check(state.isComplete()) { "Transfer is not complete" }
+
+        val expectedFileIdHash = TransferPlatform.sha256ToHex(fileId.value.encodeToByteArray())
+        check(state.fileIdHash == expectedFileIdHash) { "fileId does not match completed transfer" }
+
+        return TransferImportSourceImpl(
+            state = state,
+            transferId = transferId,
+            fileId = fileId,
+            totalBytes = state.getTotalBytes(),
+        )
     }
 
     override fun getProgress(transferId: TransferId): StateFlow<TransferReceiverProgress?> {
@@ -105,181 +164,487 @@ class InMemoryTransferReceiver(
         return getOrCreateProgressFlow(transferIdHash)
     }
 
-    private fun getOrCreateProgressFlow(transferIdHash: String): MutableStateFlow<TransferReceiverProgress?> {
-        return progressFlows.getOrPut(transferIdHash) { MutableStateFlow(null) }
+    override suspend fun abort(transferIdHash: String, reason: String): Boolean {
+        require(transferIdHash.isNotBlank()) { "transferIdHash is required" }
+        require(reason.isNotBlank()) { "abort reason is required" }
+
+        val state = mapMutex.withLock { activeTransfers[transferIdHash] } ?: return false
+        if (!state.cancel(reason)) return false
+        cleanupTransfer(transferIdHash, state)
+        return true
     }
+
+    override suspend fun sweepExpired(): Int {
+        val now = clock.nowMillis()
+        val snapshot = mapMutex.withLock { activeTransfers.toMap() }
+        var removed = 0
+        for ((transferIdHash, state) in snapshot) {
+            val expiration = state.expireIfNeeded(
+                nowMillis = now,
+                idleTimeoutMs = config.idleTimeoutMs,
+                maxLifetimeMs = config.maxLifetimeMs,
+            ) ?: continue
+            cleanupTransfer(transferIdHash, state)
+            removed++
+        }
+        return removed
+    }
+
+    private fun validateBeforeAllocation(transferData: TransferData): TransferError? {
+        if (transferData.totalChunks <= 0 || transferData.totalChunks > config.maxChunks) {
+            return TransferError.InvalidTransferMetadata(
+                "totalChunks ${transferData.totalChunks} outside allowed range 1..${config.maxChunks}",
+            )
+        }
+        if (transferData.chunkIndex < 0 || transferData.chunkIndex >= transferData.totalChunks) {
+            return TransferError.InvalidChunkIndex(transferData.totalChunks, transferData.chunkIndex)
+        }
+        if (transferData.fragmentCount <= 0 || transferData.fragmentCount > TransferProtocol.MAX_FRAGMENTS_PER_CHUNK) {
+            return TransferError.InvalidTransferMetadata(
+                "fragmentCount ${transferData.fragmentCount} outside allowed range 1..${TransferProtocol.MAX_FRAGMENTS_PER_CHUNK}",
+            )
+        }
+        if (transferData.fragmentIndex < 0 || transferData.fragmentIndex >= transferData.fragmentCount) {
+            return TransferError.InvalidTransferMetadata(
+                "Invalid fragmentIndex ${transferData.fragmentIndex} for fragmentCount ${transferData.fragmentCount}",
+            )
+        }
+        if (transferData.ciphertext.isEmpty() || transferData.ciphertext.size > config.maxCiphertextSize) {
+            return TransferError.ChunkTooLarge(config.maxCiphertextSize, transferData.ciphertext.size)
+        }
+        if (transferData.nonce.size != TransferProtocol.NONCE_SIZE) {
+            return TransferError.InvalidTransferMetadata("Invalid nonce size ${transferData.nonce.size}")
+        }
+        return null
+    }
+
+    private fun getOrCreateProgressFlow(
+        transferIdHash: String,
+    ): MutableStateFlow<TransferReceiverProgress?> {
+        progressRegistry.value[transferIdHash]?.let { return it }
+
+        val candidate = MutableStateFlow<TransferReceiverProgress?>(null)
+        progressRegistry.update { current ->
+            if (current.containsKey(transferIdHash)) current else current + (transferIdHash to candidate)
+        }
+        return progressRegistry.value.getValue(transferIdHash)
+    }
+
+    private suspend fun cleanupTransfer(transferIdHash: String, state: TransferState) {
+        mapMutex.withLock {
+            if (activeTransfers[transferIdHash] === state) {
+                activeTransfers.remove(transferIdHash)
+            }
+        }
+        state.clearEncryptedChunks()
+        progressRegistry.update { it - transferIdHash }
+    }
+
+    private data class EncryptedFragment(
+        val ciphertext: ByteArray,
+        val nonce: ByteArray,
+        val fragmentIndex: Int,
+        val fragmentCount: Int,
+    )
 
     private inner class TransferState(
         val transferIdHash: String,
         val fileIdHash: String,
+        val protocolVersion: Int,
         val totalChunks: Int,
-        val config: TransferConfig,
+        private val createdAtMillis: Long,
         val progressFlow: MutableStateFlow<TransferReceiverProgress?>,
     ) {
         private val stateMutex = newMutex()
         private var state: TransferStateEnum = TransferStateEnum.NEW
-        private val receivedChunks: BooleanArray
-        private val chunkData: Array<ByteArray?>
-        private var bytesReceived: Long = 0
-        private var completed = false
+        private val receivedChunks = BooleanArray(totalChunks)
+        private val encryptedFragments = Array(totalChunks) { mutableListOf<EncryptedFragment>() }
+        private var receivedCount = 0
+        private var bytesReceived = 0L
+        private var bufferedCiphertextBytes = 0L
+        private var lastActivityMillis = createdAtMillis
 
-        init {
-            receivedChunks = BooleanArray(totalChunks) { false }
-            chunkData = Array(totalChunks) { null }
-        }
-
-        suspend fun processChunk(transferData: TransferData, decryptor: TransferDecryptor): ReceiveResult {
-            stateMutex.lock()
-            try {
-                when (state) {
-                    TransferStateEnum.COMPLETE -> {
-                        return ReceiveResult.Error(TransferError.TransferCancelled("Transfer already completed"))
-                    }
-                    TransferStateEnum.CANCELLED -> {
-                        return ReceiveResult.Error(TransferError.TransferCancelled("Transfer cancelled"))
-                    }
-                    TransferStateEnum.FAILED -> {
-                        return ReceiveResult.Error(TransferError.IoError("Transfer failed"))
-                    }
-                    TransferStateEnum.NEW -> {
-                        state = TransferStateEnum.RECEIVING
-                    }
-                    TransferStateEnum.RECEIVING -> {
-                        // continue processing
-                    }
-                }
-
-                if (transferData.chunkIndex >= totalChunks) {
-                    state = TransferStateEnum.FAILED
-                    return ReceiveResult.Error(TransferError.InvalidChunkIndex(totalChunks, transferData.chunkIndex))
-                }
-
-                if (receivedChunks[transferData.chunkIndex]) {
-                    return ReceiveResult.DuplicateChunk(transferData.chunkIndex)
-                }
-
-                val plaintext: ByteArray
-                try {
-                    val nonce = Nonce(transferData.nonce)
-                    plaintext = decryptor.decrypt(transferData.ciphertext, nonce)
-                } catch (e: Exception) {
-                    state = TransferStateEnum.FAILED
-                    progressFlow.value = TransferReceiverProgress.Error(TransferError.DecryptionFailed(transferData.chunkIndex))
-                    return ReceiveResult.Error(TransferError.DecryptionFailed(transferData.chunkIndex))
-                }
-
-                receivedChunks[transferData.chunkIndex] = true
-                chunkData[transferData.chunkIndex] = plaintext
-                bytesReceived += plaintext.size.toLong()
-
-                progressFlow.value = TransferReceiverProgress.ChunkReceived(
-                    chunkIndex = transferData.chunkIndex,
-                    totalChunks = totalChunks,
-                    bytesReceived = bytesReceived,
-                )
-
-                val isFinal = transferData.chunkIndex == totalChunks - 1
-                val allReceived = receivedChunks.all { it }
-
-                if (allReceived) {
-                    completed = true
-                    state = TransferStateEnum.COMPLETE
-                    progressFlow.value = TransferReceiverProgress.TransferComplete(totalChunks, bytesReceived)
-                    return ReceiveResult.TransferComplete(totalChunks)
-                }
-
-                state = TransferStateEnum.RECEIVING
-                return ReceiveResult.ChunkAccepted(transferData.chunkIndex, isFinal)
-            } finally {
-                stateMutex.unlock()
+        suspend fun processChunk(
+            transferData: TransferData,
+            decryptor: TransferDecryptor,
+        ): ReceiveResult = stateMutex.withLock {
+            when (state) {
+                TransferStateEnum.COMPLETE, TransferStateEnum.IMPORTING ->
+                    return@withLock ReceiveResult.Error(
+                        TransferError.TransferCancelled("Transfer already completed"),
+                    )
+                TransferStateEnum.CANCELLED ->
+                    return@withLock ReceiveResult.Error(
+                        TransferError.TransferCancelled("Transfer cancelled"),
+                    )
+                TransferStateEnum.FAILED ->
+                    return@withLock ReceiveResult.Error(TransferError.IoError("Transfer failed"))
+                TransferStateEnum.NEW -> state = TransferStateEnum.RECEIVING
+                TransferStateEnum.RECEIVING -> Unit
             }
+
+            val metadataError = validateStateBinding(transferData)
+            if (metadataError != null) {
+                return@withLock fail(metadataError)
+            }
+
+            val chunkIndex = transferData.chunkIndex
+            val fragmentIndex = transferData.fragmentIndex
+            val fragmentCount = transferData.fragmentCount
+            val fragments = encryptedFragments[chunkIndex]
+
+            if (receivedChunks[chunkIndex]) {
+                return@withLock ReceiveResult.DuplicateChunk(chunkIndex)
+            }
+
+            if (fragments.any { it.fragmentIndex == fragmentIndex }) {
+                return@withLock ReceiveResult.DuplicateChunk(chunkIndex)
+            }
+
+            // Fragment metadata is transport state, not AEAD AAD. It therefore must be
+            // internally consistent before reassembly or an attacker could force ambiguous
+            // grouping / premature assembly of otherwise authenticated ciphertext.
+            if (fragments.isNotEmpty()) {
+                val first = fragments.first()
+                if (first.fragmentCount != fragmentCount) {
+                    return@withLock fail(
+                        TransferError.InvalidTransferMetadata(
+                            "fragmentCount changed within chunk $chunkIndex: ${first.fragmentCount} -> $fragmentCount",
+                        ),
+                    )
+                }
+                if (!first.nonce.contentEquals(transferData.nonce)) {
+                    return@withLock fail(
+                        TransferError.InvalidTransferMetadata("nonce changed between fragments of chunk $chunkIndex"),
+                    )
+                }
+            }
+
+            // fragments already includes the current fragment (added above), so no need to add transferData.ciphertext.size again
+            val chunkBufferedBytes = fragments.sumOf { it.ciphertext.size.toLong() }
+            if (chunkBufferedBytes > config.maxCiphertextSize.toLong()) {
+                return@withLock fail(
+                    TransferError.ChunkTooLarge(config.maxCiphertextSize, chunkBufferedBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()),
+                )
+            }
+
+            val prospectiveBufferedBytes = bufferedCiphertextBytes + transferData.ciphertext.size.toLong()
+            if (prospectiveBufferedBytes > config.maxTransferBytes) {
+                return@withLock fail(
+                    TransferError.TransferTooLarge(
+                        maxBytes = config.maxTransferBytes,
+                        actualBytes = prospectiveBufferedBytes,
+                    ),
+                )
+            }
+
+            fragments.add(
+                EncryptedFragment(
+                    ciphertext = transferData.ciphertext.copyOf(),
+                    nonce = transferData.nonce.copyOf(),
+                    fragmentIndex = fragmentIndex,
+                    fragmentCount = fragmentCount,
+                ),
+            )
+
+            if (fragments.size != fragmentCount) {
+                bufferedCiphertextBytes = prospectiveBufferedBytes
+                lastActivityMillis = clock.nowMillis()
+                return@withLock ReceiveResult.ChunkAccepted(chunkIndex, false)
+            }
+
+            fragments.sortWith(compareBy { it.fragmentIndex })
+            for (expectedIndex in fragments.indices) {
+                if (fragments[expectedIndex].fragmentIndex != expectedIndex) {
+                    return@withLock fail(
+                        TransferError.InvalidTransferMetadata("Missing or inconsistent fragment sequence for chunk $chunkIndex"),
+                    )
+                }
+            }
+
+            val totalSize = fragments.sumOf { it.ciphertext.size }
+            if (totalSize > config.maxCiphertextSize) {
+                return@withLock fail(TransferError.ChunkTooLarge(config.maxCiphertextSize, totalSize))
+            }
+
+            val fullCiphertext = ByteArray(totalSize)
+            var offset = 0
+            for (fragment in fragments) {
+                fragment.ciphertext.copyInto(fullCiphertext, offset)
+                offset += fragment.ciphertext.size
+            }
+            val fullNonce = fragments.first().nonce.copyOf()
+
+            val aad = TransferProtocol.createDataAad(
+                protocolVersion = transferData.protocolVersion,
+                transferIdHash = transferData.transferIdHash,
+                fileIdHash = transferData.fileIdHash,
+                chunkIndex = chunkIndex,
+                totalChunks = totalChunks,
+            )
+
+            val plaintext = try {
+                decryptor.decrypt(
+                    ciphertext = fullCiphertext,
+                    nonce = Nonce(fullNonce),
+                    aad = aad,
+                )
+            } catch (e: CancellationException) {
+                // The final fragment has not been committed to bufferedCiphertextBytes yet.
+                // Remove it so a transport retry can safely re-submit and authenticate it.
+                fragments.removeAll { it.fragmentIndex == fragmentIndex }
+                fullCiphertext.fill(0)
+                fullNonce.fill(0)
+                throw e
+            } catch (_: Exception) {
+                fullCiphertext.fill(0)
+                fullNonce.fill(0)
+                return@withLock fail(TransferError.DecryptionFailed(chunkIndex))
+            }
+
+            // Authenticate immediately, but never retain plaintext in TransferState.
+            val plaintextSize = plaintext.size
+            plaintext.fill(0)
+
+            // Fragment copies are no longer needed after authenticated reassembly.
+            for (fragment in fragments) {
+                fragment.ciphertext.fill(0)
+                fragment.nonce.fill(0)
+            }
+            encryptedFragments[chunkIndex] = mutableListOf(
+                EncryptedFragment(
+                    ciphertext = fullCiphertext,
+                    nonce = fullNonce,
+                    fragmentIndex = 0,
+                    fragmentCount = 1,
+                ),
+            )
+
+            receivedChunks[chunkIndex] = true
+            receivedCount++
+            bytesReceived += plaintextSize.toLong()
+            bufferedCiphertextBytes = prospectiveBufferedBytes
+            lastActivityMillis = clock.nowMillis()
+
+            progressFlow.value = TransferReceiverProgress.ChunkReceived(
+                chunkIndex = chunkIndex,
+                totalChunks = totalChunks,
+                bytesReceived = bytesReceived,
+            )
+
+            val isFinal = chunkIndex == totalChunks - 1
+            if (receivedCount == totalChunks) {
+                state = TransferStateEnum.COMPLETE
+                progressFlow.value =
+                    TransferReceiverProgress.TransferComplete(totalChunks, bytesReceived)
+                return@withLock ReceiveResult.TransferComplete(totalChunks)
+            }
+
+            ReceiveResult.ChunkAccepted(chunkIndex, isFinal)
         }
 
-        suspend fun getChunk(chunkIndex: Int): ByteArray? {
-            return stateMutex.withLock { chunkData[chunkIndex] }
+        private fun fail(error: TransferError): ReceiveResult.Error {
+            state = TransferStateEnum.FAILED
+            progressFlow.value = TransferReceiverProgress.Error(error)
+            return ReceiveResult.Error(error)
         }
 
-        suspend fun isComplete(): Boolean = stateMutex.withLock { completed }
+        private fun validateStateBinding(transferData: TransferData): TransferError? {
+            if (transferData.transferIdHash != transferIdHash) {
+                return TransferError.InvalidTransferMetadata("transferIdHash changed during transfer")
+            }
+            if (transferData.fileIdHash != fileIdHash) {
+                return TransferError.InvalidTransferMetadata("fileIdHash changed during transfer")
+            }
+            if (transferData.protocolVersion != protocolVersion) {
+                return TransferError.InvalidTransferMetadata("protocolVersion changed during transfer")
+            }
+            if (transferData.totalChunks != totalChunks) {
+                return TransferError.InvalidTransferMetadata("totalChunks changed during transfer")
+            }
+            if (transferData.chunkIndex < 0 || transferData.chunkIndex >= totalChunks) {
+                return TransferError.InvalidChunkIndex(totalChunks, transferData.chunkIndex)
+            }
+            return null
+        }
+
+        suspend fun getEncryptedChunk(chunkIndex: Int): EncryptedFragment? =
+            stateMutex.withLock {
+                val fragments = encryptedFragments[chunkIndex]
+                if (fragments.isEmpty()) return@withLock null
+                fragments.firstOrNull()
+            }
+
+        suspend fun isComplete(): Boolean =
+            stateMutex.withLock { state == TransferStateEnum.COMPLETE }
+
+        suspend fun isFailed(): Boolean =
+            stateMutex.withLock { state == TransferStateEnum.FAILED }
 
         suspend fun getTotalBytes(): Long = stateMutex.withLock { bytesReceived }
 
-        fun getTotalBytesSync(): Long = bytesReceived
+        suspend fun beginImport(): Boolean = stateMutex.withLock {
+            if (state != TransferStateEnum.COMPLETE) return@withLock false
+            state = TransferStateEnum.IMPORTING
+            lastActivityMillis = clock.nowMillis()
+            true
+        }
 
-        suspend fun cancel(): Boolean = stateMutex.withLock {
-            if (state == TransferStateEnum.NEW || state == TransferStateEnum.RECEIVING) {
-                state = TransferStateEnum.CANCELLED
-                true
-            } else {
-                false
+        suspend fun cancel(reason: String): Boolean = stateMutex.withLock {
+            when (state) {
+                TransferStateEnum.NEW, TransferStateEnum.RECEIVING, TransferStateEnum.COMPLETE -> {
+                    state = TransferStateEnum.CANCELLED
+                    progressFlow.value =
+                        TransferReceiverProgress.Error(TransferError.TransferCancelled(reason))
+                    true
+                }
+                TransferStateEnum.IMPORTING,
+                TransferStateEnum.CANCELLED,
+                TransferStateEnum.FAILED -> false
             }
         }
 
-        suspend fun fail(): Boolean = stateMutex.withLock {
-            if (state != TransferStateEnum.COMPLETE && state != TransferStateEnum.CANCELLED) {
-                state = TransferStateEnum.FAILED
-                true
-            } else {
-                false
+        suspend fun expireIfNeeded(
+            nowMillis: Long,
+            idleTimeoutMs: Long,
+            maxLifetimeMs: Long,
+        ): TransferError.TransferExpired? = stateMutex.withLock {
+            if (state == TransferStateEnum.IMPORTING || state == TransferStateEnum.CANCELLED || state == TransferStateEnum.FAILED) {
+                return@withLock null
             }
+            val idleFor = nowMillis - lastActivityMillis
+            val age = nowMillis - createdAtMillis
+            val reason = when {
+                age >= maxLifetimeMs -> "Transfer exceeded maximum lifetime"
+                idleFor >= idleTimeoutMs -> "Transfer idle timeout"
+                else -> return@withLock null
+            }
+            state = TransferStateEnum.CANCELLED
+            val error = TransferError.TransferExpired(reason)
+            progressFlow.value = TransferReceiverProgress.Error(error)
+            error
         }
 
-        suspend fun isCancelled(): Boolean = stateMutex.withLock { state == TransferStateEnum.CANCELLED }
-        suspend fun isFailed(): Boolean = stateMutex.withLock { state == TransferStateEnum.FAILED }
-        suspend fun isCompleted(): Boolean = stateMutex.withLock { state == TransferStateEnum.COMPLETE }
+        suspend fun clearEncryptedChunks() = stateMutex.withLock {
+            for (i in encryptedFragments.indices) {
+                for (fragment in encryptedFragments[i]) {
+                    fragment.ciphertext.fill(0)
+                    fragment.nonce.fill(0)
+                }
+                encryptedFragments[i].clear()
+                receivedChunks[i] = false
+            }
+            receivedCount = 0
+            bufferedCiphertextBytes = 0L
+        }
     }
 
     private inner class TransferImportSourceImpl(
         private val state: TransferState,
-        override val fileId: dev.veilshare.core.model.FileId,
+        override val transferId: TransferId,
+        override val fileId: FileId,
+        private val totalBytes: Long,
     ) : TransferImportSource {
-        override val transferId: TransferId = TransferId(state.transferIdHash)
         override val displayName: String = "received-file"
         override val mimeHint: String? = null
-        private var currentChunkIndex = 0
-        private var closed = false
+        override val sizeHint: Long = totalBytes
 
-        override val sizeHint: Long
-            get() = state.getTotalBytesSync()
+        private val sourceMutex = newMutex()
+        private var opened = false
+        private val importProgress =
+            MutableStateFlow<TransferImportProgress>(TransferImportProgress.Preparing(state.totalChunks))
 
-        override fun getProgress(): StateFlow<TransferImportProgress> {
-            val flow = MutableStateFlow<TransferImportProgress>(TransferImportProgress.Preparing(state.totalChunks))
+        override fun getProgress(): StateFlow<TransferImportProgress> = importProgress
 
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                for (i in 0 until state.totalChunks) {
-                    flow.value = TransferImportProgress.ChunkReady(i, state.totalChunks)
-                    delay(1) // yield
-                }
-                flow.value = TransferImportProgress.Complete(state.totalChunks, state.getTotalBytesSync())
-            }
-
-            return flow
-        }
-
-        override suspend fun openRead(): TransferImportReadHandle {
-            if (closed) throw IllegalStateException("Already closed")
-            currentChunkIndex = 0
-            return TransferImportReadHandleImpl()
+        override suspend fun openRead(): TransferImportReadHandle = sourceMutex.withLock {
+            check(!opened) { "Transfer import source can only be opened once" }
+            check(state.beginImport()) { "Transfer is no longer available for import" }
+            opened = true
+            TransferImportReadHandleImpl()
         }
 
         private inner class TransferImportReadHandleImpl : TransferImportReadHandle {
-            override suspend fun read(maxBytes: Int): ByteArray {
-                while (currentChunkIndex < state.totalChunks) {
-                    val chunk = state.getChunk(currentChunkIndex)
-                    if (chunk != null) {
-                        currentChunkIndex++
-                        if (chunk.size <= maxBytes) {
-                            return chunk
-                        } else {
-                            return chunk
+            private val readMutex = newMutex()
+            private var currentChunkIndex = 0
+            private var currentPlaintext: ByteArray? = null
+            private var currentOffset = 0
+            private var closed = false
+            private var cleanedUp = false
+
+            override suspend fun read(maxBytes: Int): ByteArray = readMutex.withLock {
+                require(maxBytes > 0) { "maxBytes must be positive" }
+                check(!closed) { "Read handle is closed" }
+
+                while (true) {
+                    val plaintext = currentPlaintext
+                    if (plaintext != null && currentOffset < plaintext.size) {
+                        val end = minOf(plaintext.size, currentOffset + maxBytes)
+                        val result = plaintext.copyOfRange(currentOffset, end)
+                        currentOffset = end
+                        if (currentOffset == plaintext.size) {
+                            plaintext.fill(0)
+                            currentPlaintext = null
+                            currentOffset = 0
+                            currentChunkIndex++
                         }
+                        return@withLock result
                     }
-                    delay(10)
+
+                    if (currentChunkIndex >= state.totalChunks) {
+                        importProgress.value =
+                            TransferImportProgress.Complete(state.totalChunks, totalBytes)
+                        cleanupOnce()
+                        return@withLock ByteArray(0)
+                    }
+
+                    val encrypted = state.getEncryptedChunk(currentChunkIndex)
+                        ?: throw IllegalStateException(
+                            "Missing encrypted chunk $currentChunkIndex from completed transfer",
+                        )
+                    val aad = TransferProtocol.createDataAad(
+                        protocolVersion = state.protocolVersion,
+                        transferIdHash = state.transferIdHash,
+                        fileIdHash = state.fileIdHash,
+                        chunkIndex = currentChunkIndex,
+                        totalChunks = state.totalChunks,
+                    )
+                    currentPlaintext = try {
+                        decryptor.decrypt(
+                            ciphertext = encrypted.ciphertext,
+                            nonce = Nonce(encrypted.nonce),
+                            aad = aad,
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        val error = TransferError.DecryptionFailed(currentChunkIndex)
+                        importProgress.value = TransferImportProgress.Error(error)
+                        cleanupOnce()
+                        throw TransferException(error, e)
+                    }
+                    currentOffset = 0
+                    importProgress.value =
+                        TransferImportProgress.ChunkReady(currentChunkIndex, state.totalChunks)
                 }
-                return ByteArray(0) // EOF
+                // Unreachable, but satisfies compiler return type analysis
+                return@withLock ByteArray(0)
             }
 
             override suspend fun close() {
-                closed = true
+                readMutex.withLock {
+                    if (closed) return@withLock
+                    currentPlaintext?.fill(0)
+                    currentPlaintext = null
+                    currentOffset = 0
+                    closed = true
+                    cleanupOnce()
+                }
+            }
+
+            private suspend fun cleanupOnce() {
+                if (cleanedUp) return
+                cleanedUp = true
+                cleanupTransfer(state.transferIdHash, state)
             }
         }
     }

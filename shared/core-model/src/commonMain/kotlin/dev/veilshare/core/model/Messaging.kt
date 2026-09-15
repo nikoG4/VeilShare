@@ -18,6 +18,7 @@ data class SignalingEnvelope(
     val messageId: MessageId,
     val type: MessageType,
     val sessionId: SessionId? = null,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val payload: ByteArray = ByteArray(0),
 ) {
     init {
@@ -138,6 +139,7 @@ enum class LookupStatus {
 data class RelayRequest(
     val toReferenceCode: ReferenceCode,
     val sessionId: SessionId,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val opaquePayload: ByteArray,
     val protocolVersion: Int = SharingProtocol.VERSION,
 ) {
@@ -163,6 +165,7 @@ data class PingMessage(
 enum class PeerMessageType {
     SESSION_HELLO,
     SESSION_CONFIRM,
+    SESSION_CONFIRM_ACK,
     OFFER,
     ACCEPT,
     REJECT,
@@ -178,6 +181,7 @@ data class PeerEnvelope(
     val messageType: PeerMessageType,
     val sessionId: SessionId,
     val transferId: TransferId,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val payload: ByteArray,
 ) {
     init {
@@ -224,16 +228,20 @@ data class SessionConfirm(
 
 @Serializable
 data class SessionConfirmAck(
+    val senderIdentityIdHash: String,
     val sessionIdHash: String,
     val senderEphemeralPublicKey: String,
     val transcriptHash: String,
     val protocolVersion: Int = SharingProtocol.VERSION,
+    val signature: String,
 ) {
     init {
         SharingProtocol.requireSupported(protocolVersion)
+        require(senderIdentityIdHash.isNotBlank() && senderIdentityIdHash.length <= 128)
         require(sessionIdHash.isNotBlank() && sessionIdHash.length <= 128)
         require(senderEphemeralPublicKey.isNotBlank() && senderEphemeralPublicKey.length <= 512)
         require(transcriptHash.isNotBlank() && transcriptHash.length <= 128)
+        require(signature.isNotBlank() && signature.length <= 512)
     }
 }
 
@@ -243,8 +251,12 @@ data class TransferData(
     val fileIdHash: String,
     val chunkIndex: Int,
     val totalChunks: Int,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val ciphertext: ByteArray,
+    @Serializable(with = Base64ByteArraySerializer::class)
     val nonce: ByteArray,
+    val fragmentIndex: Int = 0,
+    val fragmentCount: Int = 1,
     val protocolVersion: Int = SharingProtocol.VERSION,
 ) {
     init {
@@ -256,6 +268,9 @@ data class TransferData(
         require(chunkIndex < totalChunks)
         require(ciphertext.isNotEmpty() && ciphertext.size <= SharingProtocol.MAX_PEER_PAYLOAD_BYTES)
         require(nonce.size == 12) // ChaCha20-Poly1305 nonce
+        require(fragmentIndex >= 0)
+        require(fragmentCount > 0)
+        require(fragmentIndex < fragmentCount)
     }
 }
 
