@@ -45,10 +45,11 @@
     <string name="close">Cerrar</string>
     <string name="fatal_title">No se pudo continuar</string>
     <string name="fatal_description">Reinicia la aplicación para volver a comprobar el estado. No se realizará ninguna limpieza automática.</string>
-    
+
     <!-- Sharing strings -->
     <string name="share_title">Compartir</string>
     <string name="share_sender_title">Enviar archivo</string>
+    <string name="share_receive">Recibir archivo</string>
     <string name="share_sender_description">Selecciona un archivo e ingresa el código de referencia del destinatario.</string>
     <string name="share_select_file">Archivo a enviar</string>
     <string name="share_browse">Examinar…</string>
@@ -68,7 +69,7 @@
     <string name="share_error_title">Error</string>
     <string name="retry">Reintentar</string>
     <string name="done">Listo</string>
-    
+
     <string name="share_receiver_waiting_title">Esperando transferencia</string>
     <string name="share_receiver_waiting_description">Comparte este código con el remitente: %1$s</string>
     <string name="share_incoming_title">Transferencia entrante</string>
