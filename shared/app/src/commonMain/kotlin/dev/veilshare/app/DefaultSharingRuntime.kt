@@ -54,6 +54,7 @@ import dev.veilshare.ui.features.SharingVerificationReason
 import dev.veilshare.ui.features.SharingVerificationResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -520,7 +521,10 @@ class DefaultSharingRuntime(
 
     private fun ensureCollector() {
         if (collectorJob?.isActive == true) return
-        collectorJob = scope.launch {
+        // SignalingClient.incoming is intentionally non-replaying. Subscribe inline before
+        // returning so the first fast RELAY/SESSION_HELLO cannot land in the tiny window
+        // between launch() and collector startup and disappear.
+        collectorJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             signalingClient.incoming.collect { envelope ->
                 if (envelope.type != MessageType.RELAY) return@collect
                 val sessionId = envelope.sessionId ?: return@collect
