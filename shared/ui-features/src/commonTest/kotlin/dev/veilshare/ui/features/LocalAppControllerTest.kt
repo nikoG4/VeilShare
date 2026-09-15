@@ -4,6 +4,9 @@ import dev.veilshare.core.model.BlobId
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.vault.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -45,7 +48,7 @@ class LocalAppControllerTest {
             NoopOpener,
             object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },
             RecordingSharingRuntime(),
-            backgroundScope,
+            controllerScope(),
             dispatcher,
         )
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
@@ -66,7 +69,7 @@ class LocalAppControllerTest {
             opener,
             object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },
             RecordingSharingRuntime(),
-            backgroundScope,
+            controllerScope(),
             StandardTestDispatcher(testScheduler),
         )
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
@@ -86,7 +89,7 @@ class LocalAppControllerTest {
             opener,
             object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },
             RecordingSharingRuntime(),
-            backgroundScope,
+            controllerScope(),
             dispatcher,
         )
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
@@ -283,9 +286,18 @@ class LocalAppControllerTest {
         NoopOpener,
         sharingPicker,
         runtime,
-        backgroundScope,
+        controllerScope(),
         StandardTestDispatcher(testScheduler),
     )
+
+    private fun TestScope.controllerScope(): CoroutineScope {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val controllerScope = CoroutineScope(SupervisorJob() + dispatcher)
+        backgroundScope.coroutineContext[Job]?.invokeOnCompletion {
+            controllerScope.coroutineContext[Job]?.cancel()
+        }
+        return controllerScope
+    }
 }
 
 private val TEST_PERSONA = LocalPersonaId("a".repeat(64))
