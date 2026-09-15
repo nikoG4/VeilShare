@@ -16,7 +16,9 @@ jobs:
         with:
           ref: feature/sharing-ui-polish
           fetch-depth: 0
-      - run: python .github/scripts/patch-sharing-contact-verification-v2.py
+      - run: |
+          git show origin/ci/patch-sharing-contact-verification-v2:.github/scripts/patch-sharing-contact-verification-v2.py > /tmp/patch-sharing-contact-verification-v2.py
+          python /tmp/patch-sharing-contact-verification-v2.py
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
