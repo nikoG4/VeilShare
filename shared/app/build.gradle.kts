@@ -18,7 +18,7 @@ kotlin {
             implementation(compose.runtime)
         }
         androidMain.dependencies { implementation(libs.ktor.client.cio) }
-        desktopMain.dependencies { implementation(libs.ktor.client.cio) }
+        getByName("desktopMain").dependencies { implementation(libs.ktor.client.cio) }
         commonTest.dependencies { implementation(libs.kotlin.test); implementation(libs.coroutines.test) }
     }
 }
