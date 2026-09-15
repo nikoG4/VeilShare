@@ -223,6 +223,8 @@ class DefaultSharingRuntime(
                     }
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Throwable) {
             stateMutex.withLock { pendingVerification = null }
             SharingPeerLookupResult.Failed("No se pudo comprobar la identidad del contacto.")

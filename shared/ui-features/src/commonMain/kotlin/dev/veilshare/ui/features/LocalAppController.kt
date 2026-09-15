@@ -284,6 +284,8 @@ class LocalAppController(
                         verification.copy(busy = false, error = result.reason ?: "No se pudo guardar la verificación."),
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 mutableState.value = RootState.SharingSender(
                     verification.copy(busy = false, error = "No se pudo guardar la verificación."),
@@ -361,6 +363,8 @@ class LocalAppController(
                         SharingContactVerificationState.Entering(referenceCode.value, error = result.reason ?: "No se pudo comprobar el contacto."),
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 mutableState.value = RootState.SharingContactVerification(
                     SharingContactVerificationState.Entering(referenceCode.value, error = "No se pudo comprobar el contacto."),
@@ -395,6 +399,8 @@ class LocalAppController(
                         verification.copy(busy = false, error = result.reason ?: "No se pudo guardar la verificación."),
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 mutableState.value = RootState.SharingContactVerification(
                     verification.copy(busy = false, error = "No se pudo guardar la verificación."),
