@@ -44,8 +44,26 @@ jobs:
       - run: chmod +x gradlew
       - run: ./gradlew :server:signaling:test :server:signaling:distZip --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: veilshare-signaling-${{ github.sha }}
+          path: server/signaling/build/distributions/*.zip
+          if-no-files-found: error
+
+  signaling-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - run: ./gradlew :server:signaling:distZip -x :server:signaling:test --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veilshare-signaling-smoke-${{ github.sha }}
           path: server/signaling/build/distributions/*.zip
           if-no-files-found: error
 
@@ -70,6 +88,28 @@ jobs:
         with:
           name: veilshare-android-beta-${{ github.sha }}
           path: androidApp/build/outputs/apk/releaseCheck/*.apk
+          if-no-files-found: error
+
+  android-physical-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - name: Build physical-device debug APK for adb reverse
+        run: >-
+          ./gradlew
+          :androidApp:assembleDebug
+          -Pveilshare.signalingUrl=ws://127.0.0.1:8080/v1/ws
+          --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veilshare-android-physical-smoke-${{ github.sha }}
+          path: androidApp/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
   desktop-beta:
