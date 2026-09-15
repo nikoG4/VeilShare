@@ -1,6 +1,6 @@
 # VeilShare Sharing UX Contract
 
-Status: draft implementation contract for PR #6, stacked on PR #5.
+Status: implemented baseline contract for PR #6, stacked on PR #5.
 
 ## Goals
 
@@ -12,13 +12,14 @@ Compose/UI MUST NOT receive or render:
 
 - vault VMK, KEK, PIN, VaultId, or REAL/DECOY labels as sharing identity material;
 - Ed25519 or X25519 private material;
+- peer public-key objects used by the trust store;
 - pending inbound handshake objects;
 - handshake/session DATA keys or envelope keys;
 - raw protocol envelopes.
 
-The UI may receive only high-level state such as ReferenceCode, display alias, fingerprint, file metadata, progress, and terminal result.
+The UI may receive only high-level state such as ReferenceCode, display alias, fingerprint, file metadata, progress, verification reason, and terminal result.
 
-ReferenceCode is routing metadata only. Entering or scanning a ReferenceCode MUST NOT establish trust by itself.
+ReferenceCode is routing metadata only. Entering a ReferenceCode MUST NOT establish trust by itself.
 
 ## Persona separation
 
@@ -26,12 +27,12 @@ The currently unlocked local persona maps to an opaque `LocalPersonaId`, which P
 
 ## Primary entry points
 
-While a vault is unlocked the file browser exposes a single primary Share action. The first sharing surface offers two understandable choices:
+While a vault is unlocked the browser exposes two explicit actions:
 
-1. **Send a file** — choose a file, select/enter a peer route, verify trust if needed, then send.
-2. **Receive a file** — show this persona's current ReferenceCode and wait for a trusted inbound offer.
+1. **Enviar archivo** — choose a file, enter a peer ReferenceCode, verify trust if needed, then send.
+2. **Recibir archivo** — show this persona's current ReferenceCode and wait for a trusted inbound offer.
 
-Advanced identity/contact controls belong under a secondary `Trusted contacts` surface rather than the first sharing screen.
+Advanced contact management belongs in a secondary surface and is not required for the PR #6 freeze baseline.
 
 ## Sender state machine
 
@@ -40,18 +41,21 @@ Advanced identity/contact controls belong under a secondary `Trusted contacts` s
 - peer ReferenceCode field/action;
 - no protocol terminology.
 
-`Verification required`
+`VerificationRequired`
 - show peer fingerprint in grouped form;
+- distinguish a new peer from a routing code whose stored identity changed;
 - explicitly state that the routing code alone is not proof of identity;
-- require an explicit out-of-band confirmation before pinning;
-- later QR support may satisfy the same verification action.
+- require explicit out-of-band comparison before pinning/re-pinning;
+- a new peer requires a local alias;
+- an identity change preserves the existing contact alias;
+- the candidate public key remains runtime-owned and never enters Compose;
+- after verification the user must select the file again because the previous send attempt already relinquished and closed file ownership.
 
 `Connecting`
 - non-terminal progress;
 - Cancel remains available.
 
 `Sending`
-- filename;
 - bytes sent / total bytes;
 - progress indicator;
 - Cancel remains available;
@@ -63,6 +67,7 @@ Advanced identity/contact controls belong under a secondary `Trusted contacts` s
 
 `Error` / `Cancelled`
 - concise user-facing reason;
+- key mismatch remains blocked and is never auto-accepted;
 - Retry only if the previous ownership/state allows a fresh file selection;
 - Done returns to browser.
 
@@ -92,54 +97,52 @@ Advanced identity/contact controls belong under a secondary `Trusted contacts` s
 - terminal explanation;
 - Done returns to browser.
 
-## Trusted contacts
+## Verification baseline
 
-A contact stores an alias plus pinned sharing identity/key and optional current ReferenceCode. UI fingerprint is always derived from the pinned public key, never trusted as persisted display text.
+PR #6 implements grouped manual fingerprint comparison. The runtime retains the untrusted `PeerIdentityCandidate`; UI receives only its fingerprint and verification reason. Confirmation invokes the core trust manager:
 
-Required user operations:
+- new peer -> explicit `addVerified(..., MANUAL_FINGERPRINT)`;
+- changed routed identity -> explicit `confirmIdentityChange(..., MANUAL_FINGERPRINT)`.
 
-- list contacts for the active sharing persona;
-- add after explicit verification;
-- rename alias;
-- remove contact;
-- handle identity/key mismatch as a high-friction re-verification, never automatic replacement.
+Neither path trusts a ReferenceCode, and neither automatically replaces a pinned key.
 
-## Verification
-
-Phase 1: grouped fingerprint comparison.
-
-Phase 2: QR representation containing only public verification material required by the high-level verification flow. QR scanning must still feed the same trust validation/pinning path; it must not bypass it.
+QR is a follow-up transport for public verification material. When added, scanning MUST feed the same explicit trust validation/pinning path; it must not bypass fingerprint/key checks.
 
 ## Layout
 
 Compact:
 - one-column cards;
+- Send/Receive actions remain visible from the browser;
 - primary action full width where useful;
 - file/peer metadata above destructive/accept actions.
 
 Expanded:
 - content width capped for readability;
-- optional secondary trust/help panel;
-- no stretching forms edge-to-edge.
+- Send/Receive actions remain visible from the browser toolbar;
+- no stretching verification/forms edge-to-edge.
 
 ## Accessibility and testing
 
-Important actions/states get stable test tags. Tests must cover at least:
+Important sharing entry and verification actions have stable test tags. Controller regression tests cover:
 
-- Send entry and file selection;
-- Receive entry and ReferenceCode display;
-- verification-required state;
+- sender entry/file ownership and completion;
+- first-peer verification required -> explicit confirmation -> fresh preparation;
+- changed identity confirmation using the existing alias;
+- verification dismissal clears runtime pending trust;
+- Receive entry and ReferenceCode state;
 - Accept and Reject callbacks;
-- Cancel while sending/receiving;
-- Completed -> Done;
-- Error -> close/retry;
-- compact and expanded layouts.
+- Cancel while sending;
+- Completed -> Done.
+
+Full visual screenshot regression and QR verification are follow-up work, not security prerequisites for this baseline.
 
 ## Non-goals for PR #6
 
 - changing the wire format;
 - changing HKDF/AEAD domains;
-- exposing protocol messages in UI;
+- exposing protocol messages or key objects in UI;
+- QR scanning/generation;
+- full trusted-contact CRUD UI;
 - implementing iOS native crypto/secure persistence;
 - merging any earlier PR.
 
