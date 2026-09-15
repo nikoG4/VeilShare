@@ -127,10 +127,34 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
             Column(Modifier.weight(1f)) { Text(stringResource(Res.string.files), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold); Text(stringResource(Res.string.local_storage), style = MaterialTheme.typography.bodySmall) }
             TextButton(settings) { Text(stringResource(Res.string.settings)) }; TextButton({ controller.lock() }) { Text(stringResource(Res.string.lock)) }
         }
-        if (windowClass == VeilWindowClass.Compact) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(createFolder, Modifier.weight(1f)) { Text(stringResource(Res.string.new_folder)) }; Button(controller::importFile, Modifier.weight(1f).testTag("import_action")) { Text(stringResource(Res.string.import_action)) }
-        } else Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(createFolder) { Text(stringResource(Res.string.new_folder)) }; Button(controller::importFile, Modifier.testTag("import_action")) { Text(stringResource(Res.string.import_file)) }
+        if (windowClass == VeilWindowClass.Compact) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(createFolder, Modifier.weight(1f)) { Text(stringResource(Res.string.new_folder)) }
+                Button(controller::importFile, Modifier.weight(1f).testTag("import_action")) { Text(stringResource(Res.string.import_action)) }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = controller::startSharingReceiver,
+                    modifier = Modifier.weight(1f).testTag("share_receive_action"),
+                ) { Text(stringResource(Res.string.share_receive)) }
+                Button(
+                    onClick = controller::startSharingSender,
+                    modifier = Modifier.weight(1f).testTag("share_send_action"),
+                ) { Text(stringResource(Res.string.share_sender_title)) }
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(createFolder) { Text(stringResource(Res.string.new_folder)) }
+                Button(controller::importFile, Modifier.testTag("import_action")) { Text(stringResource(Res.string.import_file)) }
+                OutlinedButton(
+                    onClick = controller::startSharingReceiver,
+                    modifier = Modifier.testTag("share_receive_action"),
+                ) { Text(stringResource(Res.string.share_receive)) }
+                Button(
+                    onClick = controller::startSharingSender,
+                    modifier = Modifier.testTag("share_send_action"),
+                ) { Text(stringResource(Res.string.share_sender_title)) }
+            }
         }
     }
 }
@@ -245,7 +269,6 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
             Text(stringResource(Res.string.share_sender_description))
             HorizontalDivider()
             
-            // File selection
             Text(stringResource(Res.string.share_select_file), style = MaterialTheme.typography.titleSmall)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
@@ -260,7 +283,6 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
                 }
             }
             
-            // Reference code input
             Text(stringResource(Res.string.share_reference_code), style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(
                 value = referenceCode,
@@ -275,7 +297,6 @@ private fun SenderPreparingScreen(state: SharingSenderState.Preparing, controlle
                 modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
             )
             
-            // Actions
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = { controller.cancelSharing() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                     Text(stringResource(Res.string.cancel))
