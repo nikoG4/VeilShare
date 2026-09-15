@@ -82,7 +82,7 @@ jobs:
           :shared:app:compileDebugKotlinAndroid
           :shared:ui-features:compileDebugKotlinAndroid
           :androidApp:assembleReleaseCheck
-          -Pveilshare.signalingUrl=wss://relay.invalid/v1/ws
+          -Pveilshare.signalingUrl=wss://veilshare-signaling-production.up.railway.app/v1/ws
           --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
