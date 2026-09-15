@@ -10,7 +10,7 @@ services:
       - "8080:8080"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz | grep -qx ok"]
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null"]
       interval: 10s
       timeout: 3s
       retries: 5
