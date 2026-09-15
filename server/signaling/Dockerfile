@@ -1,3 +1,4 @@
+# Railway build for the VeilShare signaling relay. Keep JDK 17 aligned with jvmToolchain(17).
 FROM gradle:8-jdk17 AS build
 WORKDIR /app
 COPY . .
