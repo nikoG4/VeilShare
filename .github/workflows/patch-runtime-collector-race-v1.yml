@@ -1,0 +1,48 @@
+name: Patch Runtime Collector Race V1
+
+on:
+  push:
+    branches:
+      - ci/patch-runtime-collector-race-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/beta-readiness
+          fetch-depth: 0
+      - name: Patch collector subscription ordering
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt')
+          text = p.read_text()
+
+          old_import = 'import kotlinx.coroutines.CoroutineScope\n'
+          new_import = 'import kotlinx.coroutines.CoroutineScope\nimport kotlinx.coroutines.CoroutineStart\n'
+          if old_import not in text:
+              raise SystemExit('guard failed: CoroutineScope import')
+          text = text.replace(old_import, new_import, 1)
+
+          old_collector = '''    private fun ensureCollector() {\n        if (collectorJob?.isActive == true) return\n        collectorJob = scope.launch {\n            signalingClient.incoming.collect { envelope ->\n'''
+          new_collector = '''    private fun ensureCollector() {\n        if (collectorJob?.isActive == true) return\n        // SignalingClient.incoming is intentionally non-replaying. Subscribe inline before\n        // returning so the first fast RELAY/SESSION_HELLO cannot land in the tiny window\n        // between launch() and collector startup and disappear.\n        collectorJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {\n            signalingClient.incoming.collect { envelope ->\n'''
+          if old_collector not in text:
+              raise SystemExit('guard failed: ensureCollector block')
+          text = text.replace(old_collector, new_collector, 1)
+          p.write_text(text)
+          PY
+      - name: Commit product fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt
+          git diff --cached --check
+          git commit -m "fix: subscribe relay collector before runtime activation returns"
+          git push origin HEAD:feature/beta-readiness
