@@ -10,7 +10,6 @@ import dev.veilshare.ui.features.SharingRuntime
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
-import io.ktor.client.plugins.websocket.webSocketSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,17 +17,16 @@ import kotlinx.coroutines.SupervisorJob
 fun createAndroidSharingRuntime(
     context: Context,
     endpointUrl: String,
+    allowInsecureLoopback: Boolean = false,
 ): SharingRuntime {
-    require(endpointUrl.startsWith("ws://") || endpointUrl.startsWith("wss://")) {
-        "Sharing signaling endpoint must use ws:// or wss://"
-    }
+    val validatedEndpoint = validateSignalingEndpoint(endpointUrl, allowInsecureLoopback)
     val applicationContext = context.applicationContext
     val cryptoRandom = AndroidSecureRandom()
     val idRandom = SecureRandomIdSource(cryptoRandom)
     val cipher = AndroidChaCha20Poly1305Cipher(cryptoRandom)
     val httpClient = HttpClient(CIO) { install(WebSockets) }
     val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val signaling = KtorSignalingClient(httpClient, endpointUrl, idRandom)
+    val signaling = KtorSignalingClient(httpClient, validatedEndpoint, idRandom)
     val runtime = try {
         composeDefaultSharingRuntime(
             protectedStateStore = AndroidSecureStateFactory.create(applicationContext),

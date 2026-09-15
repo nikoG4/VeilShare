@@ -54,6 +54,7 @@ import dev.veilshare.ui.features.SharingVerificationReason
 import dev.veilshare.ui.features.SharingVerificationResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -157,10 +158,8 @@ class DefaultSharingRuntime(
         if (closed) return SharingRuntimeActivation.Unavailable("Sharing runtime is closed")
         deactivate()
         return try {
-            signalingClient.connect()
-            ensureCollector()
             val contextId = contextBindings.getOrCreate(personaId)
-            val registered = lifecycle.ensureRegistered(contextId)
+            val registered = restoreTransport(contextId)
             stateMutex.withLock {
                 activeContext = contextId
                 activeVault = vault
@@ -179,11 +178,44 @@ class DefaultSharingRuntime(
         }
     }
 
+    private suspend fun restoreTransport(contextId: SharingContextId): dev.veilshare.core.transfer.ActiveSharingPresence {
+        signalingClient.connect()
+        ensureCollector()
+        return lifecycle.ensureRegistered(contextId)
+    }
+
+    override suspend fun refreshPresence(): SharingRuntimeActivation {
+        if (closed) return SharingRuntimeActivation.Unavailable("Sharing runtime is closed")
+        val contextId = stateMutex.withLock { activeContext }
+            ?: return SharingRuntimeActivation.Unavailable("Compartir no está activo.")
+        if (sendMutex.isLocked || inbound.hasActiveWork()) {
+            return SharingRuntimeActivation.Unavailable("Hay una transferencia activa.")
+        }
+        return try {
+            signalingClient.connect()
+            ensureCollector()
+            val registered = lifecycle.ensureRegistered(contextId)
+            SharingRuntimeActivation.Ready(registered.presence.referenceCode)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            SharingRuntimeActivation.Unavailable("No se pudo restablecer el canal de compartir.")
+        }
+    }
+
     override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
         val contextId = stateMutex.withLock {
             pendingVerification = null
             activeContext
         } ?: return SharingPeerLookupResult.Unavailable("Compartir no está activo.")
+        if (sendMutex.isLocked) return SharingPeerLookupResult.Unavailable("Hay una transferencia activa.")
+        try {
+            restoreTransport(contextId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            return SharingPeerLookupResult.Failed("No se pudo restablecer el canal de compartir.")
+        }
         val localIdentity = identities.publicIdentity(contextId)
             ?: return SharingPeerLookupResult.Unavailable("No se encontró la identidad local de compartir.")
         return try {
@@ -254,6 +286,14 @@ class DefaultSharingRuntime(
                 pendingVerification = null
                 activeContext
             } ?: return SharingSendResult.Unavailable("Compartir no está activo.")
+
+            try {
+                restoreTransport(contextId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                return SharingSendResult.Unavailable("Se perdió la conexión de compartir. Vuelve a intentarlo.")
+            }
 
             val start = starter.start(contextId, referenceCode)
             val started = when (start) {
@@ -481,7 +521,10 @@ class DefaultSharingRuntime(
 
     private fun ensureCollector() {
         if (collectorJob?.isActive == true) return
-        collectorJob = scope.launch {
+        // SignalingClient.incoming is intentionally non-replaying. Subscribe inline before
+        // returning so the first fast RELAY/SESSION_HELLO cannot land in the tiny window
+        // between launch() and collector startup and disappear.
+        collectorJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             signalingClient.incoming.collect { envelope ->
                 if (envelope.type != MessageType.RELAY) return@collect
                 val sessionId = envelope.sessionId ?: return@collect

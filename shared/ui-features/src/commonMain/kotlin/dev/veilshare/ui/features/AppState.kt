@@ -163,6 +163,12 @@ interface SharingRuntime : AutoCloseable {
 
     suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation
 
+    /**
+     * Re-establishes transport/presence only when no transfer is in flight. This is an
+     * explicit beta recovery boundary; it must never transparently resume encrypted DATA.
+     */
+    suspend fun refreshPresence(): SharingRuntimeActivation
+
     /** Performs only LOOKUP + trust evaluation. It never starts a handshake or transfer. */
     suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult
 
@@ -185,6 +191,9 @@ interface SharingRuntime : AutoCloseable {
 object UnavailableSharingRuntime : SharingRuntime {
     override val events: Flow<SharingRuntimeEvent> = emptyFlow()
     override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation =
+        SharingRuntimeActivation.Unavailable("Sharing runtime is not configured")
+
+    override suspend fun refreshPresence(): SharingRuntimeActivation =
         SharingRuntimeActivation.Unavailable("Sharing runtime is not configured")
 
     override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult =

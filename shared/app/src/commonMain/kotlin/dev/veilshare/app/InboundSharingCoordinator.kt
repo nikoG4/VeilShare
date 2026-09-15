@@ -253,6 +253,10 @@ internal class InboundSharingCoordinator(
         }
     }
 
+    suspend fun hasActiveWork(): Boolean = mutex.withLock {
+        current != null || handshakeJobs.isNotEmpty()
+    }
+
     suspend fun acceptIncoming() {
         val inbound = mutex.withLock {
             val value = current ?: throw IllegalStateException("No incoming offer is pending")
