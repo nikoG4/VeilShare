@@ -1,0 +1,47 @@
+name: Patch Sharing UI Test Scope V2
+
+on:
+  push:
+    branches:
+      - ci/patch-sharing-ui-test-scope-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sharing-ui-polish
+          fetch-depth: 0
+      - name: Patch test controller scope
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('shared/ui-features/src/commonTest/kotlin/dev/veilshare/ui/features/LocalAppControllerTest.kt')
+          s = p.read_text()
+          old_import = 'import kotlinx.coroutines.awaitCancellation\n'
+          new_import = 'import kotlinx.coroutines.CoroutineScope\nimport kotlinx.coroutines.Job\nimport kotlinx.coroutines.SupervisorJob\nimport kotlinx.coroutines.awaitCancellation\n'
+          assert old_import in s
+          s = s.replace(old_import, new_import, 1)
+          count = s.count('            backgroundScope,\n')
+          assert count == 3, count
+          s = s.replace('            backgroundScope,\n', '            controllerScope(),\n')
+          old_helper = '''    private fun TestScope.controller(\n        service: FakeService,\n        runtime: RecordingSharingRuntime = RecordingSharingRuntime(),\n        sharingPicker: SharingFilePicker = object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },\n    ) = LocalAppController(\n        service,\n        object : LocalFilePicker { override suspend fun pick(): ImportSource? = null },\n        NoopOpener,\n        sharingPicker,\n        runtime,\n        backgroundScope,\n        StandardTestDispatcher(testScheduler),\n    )\n'''
+          new_helper = '''    private fun TestScope.controller(\n        service: FakeService,\n        runtime: RecordingSharingRuntime = RecordingSharingRuntime(),\n        sharingPicker: SharingFilePicker = object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile? = null },\n    ) = LocalAppController(\n        service,\n        object : LocalFilePicker { override suspend fun pick(): ImportSource? = null },\n        NoopOpener,\n        sharingPicker,\n        runtime,\n        controllerScope(),\n        StandardTestDispatcher(testScheduler),\n    )\n\n    private fun TestScope.controllerScope(): CoroutineScope {\n        val dispatcher = StandardTestDispatcher(testScheduler)\n        val controllerScope = CoroutineScope(SupervisorJob() + dispatcher)\n        backgroundScope.coroutineContext[Job]?.invokeOnCompletion {\n            controllerScope.coroutineContext[Job]?.cancel()\n        }\n        return controllerScope\n    }\n'''
+          assert old_helper in s
+          s = s.replace(old_helper, new_helper, 1)
+          p.write_text(s)
+          PY
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/ui-features/src/commonTest/kotlin/dev/veilshare/ui/features/LocalAppControllerTest.kt
+          git diff --cached --check
+          git commit -m "test: fix sharing controller coroutine scope"
+          git push origin HEAD:feature/sharing-ui-polish
