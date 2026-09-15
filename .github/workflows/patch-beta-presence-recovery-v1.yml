@@ -1,0 +1,98 @@
+name: Patch Beta Presence Recovery V1
+
+on:
+  push:
+    branches:
+      - ci/patch-beta-presence-recovery-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/beta-readiness
+          fetch-depth: 0
+      - name: Patch presence recovery boundary
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"guard failed: {path}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace(
+              'shared/app/src/commonMain/kotlin/dev/veilshare/app/InboundSharingCoordinator.kt',
+              '    suspend fun acceptIncoming() {\n',
+              '    suspend fun hasActiveWork(): Boolean = mutex.withLock {\n'
+              '        current != null || handshakeJobs.isNotEmpty()\n'
+              '    }\n\n'
+              '    suspend fun acceptIncoming() {\n',
+          )
+
+          replace(
+              'shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt',
+              '''        return try {\n            signalingClient.connect()\n            ensureCollector()\n            val contextId = contextBindings.getOrCreate(personaId)\n            val registered = lifecycle.ensureRegistered(contextId)\n''',
+              '''        return try {\n            val contextId = contextBindings.getOrCreate(personaId)\n            val registered = restoreTransport(contextId)\n''',
+          )
+
+          replace(
+              'shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt',
+              '''    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {\n''',
+              '''    private suspend fun restoreTransport(contextId: SharingContextId) =\n        lifecycle.ensureRegistered(contextId).also {\n            // connect() is idempotent while healthy and creates a fresh transport after a\n            // completed disconnect. Registration then restores the same local route.\n        }\n\n    override suspend fun refreshPresence(): SharingRuntimeActivation {\n        if (closed) return SharingRuntimeActivation.Unavailable("Sharing runtime is closed")\n        val contextId = stateMutex.withLock { activeContext }\n            ?: return SharingRuntimeActivation.Unavailable("Compartir no está activo.")\n        if (sendMutex.isLocked || inbound.hasActiveWork()) {\n            return SharingRuntimeActivation.Unavailable("Hay una transferencia activa.")\n        }\n        return try {\n            signalingClient.connect()\n            ensureCollector()\n            val registered = lifecycle.ensureRegistered(contextId)\n            SharingRuntimeActivation.Ready(registered.presence.referenceCode)\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (_: Throwable) {\n            SharingRuntimeActivation.Unavailable("No se pudo restablecer el canal de compartir.")\n        }\n    }\n\n    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {\n''',
+          )
+
+          # Correct restoreTransport body: connect before registering. Kept as a second guarded
+          # replacement so an accidental lifecycle-only implementation cannot land.
+          replace(
+              'shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt',
+              '''    private suspend fun restoreTransport(contextId: SharingContextId) =\n        lifecycle.ensureRegistered(contextId).also {\n            // connect() is idempotent while healthy and creates a fresh transport after a\n            // completed disconnect. Registration then restores the same local route.\n        }\n''',
+              '''    private suspend fun restoreTransport(contextId: SharingContextId): dev.veilshare.core.transfer.ActiveSharingPresence {\n        signalingClient.connect()\n        ensureCollector()\n        return lifecycle.ensureRegistered(contextId)\n    }\n''',
+          )
+
+          replace(
+              'shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt',
+              '''        } ?: return SharingPeerLookupResult.Unavailable("Compartir no está activo.")\n        val localIdentity = identities.publicIdentity(contextId)\n''',
+              '''        } ?: return SharingPeerLookupResult.Unavailable("Compartir no está activo.")\n        if (sendMutex.isLocked) return SharingPeerLookupResult.Unavailable("Hay una transferencia activa.")\n        try {\n            restoreTransport(contextId)\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (_: Throwable) {\n            return SharingPeerLookupResult.Failed("No se pudo restablecer el canal de compartir.")\n        }\n        val localIdentity = identities.publicIdentity(contextId)\n''',
+          )
+
+          replace(
+              'shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt',
+              '''            } ?: return SharingSendResult.Unavailable("Compartir no está activo.")\n\n            val start = starter.start(contextId, referenceCode)\n''',
+              '''            } ?: return SharingSendResult.Unavailable("Compartir no está activo.")\n\n            try {\n                restoreTransport(contextId)\n            } catch (cancelled: CancellationException) {\n                throw cancelled\n            } catch (_: Throwable) {\n                return SharingSendResult.Unavailable("Se perdió la conexión de compartir. Vuelve a intentarlo.")\n            }\n\n            val start = starter.start(contextId, referenceCode)\n''',
+          )
+
+          replace(
+              'shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/LocalAppController.kt',
+              '''    fun startSharingReceiver() {\n        if (mutableState.value !is RootState.Unlocked) return\n        val referenceCode = ownSharingReferenceCode\n        if (referenceCode == null) {\n            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("Compartir no está disponible en esta sesión."))\n            return\n        }\n        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))\n    }\n''',
+              '''    fun startSharingReceiver() {\n        if (mutableState.value !is RootState.Unlocked) return\n        if (sharingJob?.isActive == true) return\n        val referenceCode = ownSharingReferenceCode\n        if (referenceCode == null) {\n            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("Compartir no está disponible en esta sesión."))\n            return\n        }\n        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))\n        sharingJob = scope.launch {\n            try {\n                when (val refreshed = withContext(workDispatcher) { sharingRuntime.refreshPresence() }) {\n                    is SharingRuntimeActivation.Ready -> {\n                        ownSharingReferenceCode = refreshed.referenceCode\n                        if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {\n                            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(refreshed.referenceCode))\n                        }\n                    }\n                    is SharingRuntimeActivation.Unavailable -> {\n                        if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {\n                            mutableState.value = RootState.SharingReceiver(\n                                SharingReceiverState.Error(refreshed.reason ?: "No se pudo restablecer el canal de compartir."),\n                            )\n                        }\n                    }\n                }\n            } catch (cancelled: CancellationException) {\n                throw cancelled\n            } catch (_: Exception) {\n                if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {\n                    mutableState.value = RootState.SharingReceiver(\n                        SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),\n                    )\n                }\n            } finally {\n                sharingJob = null\n            }\n        }\n    }\n''',
+          )
+
+          replace(
+              'shared/ui-features/src/commonTest/kotlin/dev/veilshare/ui/features/LocalAppControllerTest.kt',
+              '''    var activateCalls = 0\n    var inspectCalls = 0\n''',
+              '''    var activateCalls = 0\n    var refreshCalls = 0\n    var inspectCalls = 0\n''',
+          )
+          replace(
+              'shared/ui-features/src/commonTest/kotlin/dev/veilshare/ui/features/LocalAppControllerTest.kt',
+              '''    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {\n''',
+              '''    override suspend fun refreshPresence(): SharingRuntimeActivation {\n        refreshCalls++\n        return activation\n    }\n\n    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {\n''',
+          )
+          PY
+      - name: Commit product patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt shared/app/src/commonMain/kotlin/dev/veilshare/app/InboundSharingCoordinator.kt shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/LocalAppController.kt shared/ui-features/src/commonTest/kotlin/dev/veilshare/ui/features/LocalAppControllerTest.kt
+          git diff --cached --check
+          git commit -m "feat: recover sharing presence between transfers"
+          git push origin HEAD:feature/beta-readiness
