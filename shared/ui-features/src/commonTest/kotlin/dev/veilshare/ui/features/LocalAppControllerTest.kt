@@ -140,6 +140,82 @@ class LocalAppControllerTest {
         assertEquals(1, picked.closeCalls)
     }
 
+    @Test fun firstPeerRequiresExplicitFingerprintConfirmationBeforeRetry() = runTest {
+        val runtime = RecordingSharingRuntime(
+            sendResult = SharingSendResult.NeedsVerification(
+                fingerprint = "ab".repeat(32),
+                reason = SharingVerificationReason.NEW_PEER,
+            ),
+        )
+        val picked = BytesSharingFile("first.txt", "payload".encodeToByteArray())
+        val controller = controller(
+            FakeService(LocalStorageState.READY),
+            runtime,
+            object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile = picked },
+        )
+        controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
+        controller.startSharingSender(); controller.selectSharingFile(); advanceUntilIdle()
+        controller.enterSharingReferenceCode(TEST_REFERENCE.value)
+        controller.startSharingTransfer(); advanceUntilIdle()
+
+        val verification = assertIs<SharingSenderState.VerificationRequired>(
+            assertIs<RootState.SharingSender>(controller.state.value).state,
+        )
+        assertEquals(TEST_REFERENCE, verification.referenceCode)
+        assertEquals(SharingVerificationReason.NEW_PEER, verification.reason)
+        assertEquals(1, picked.closeCalls)
+
+        controller.confirmSharingPeer("Alice"); advanceUntilIdle()
+        assertEquals(1, runtime.confirmCalls)
+        assertEquals("Alice", runtime.lastAlias)
+        val preparing = assertIs<SharingSenderState.Preparing>(assertIs<RootState.SharingSender>(controller.state.value).state)
+        assertEquals(TEST_REFERENCE.value, preparing.referenceCode)
+        assertNull(preparing.selectedFile)
+        assertEquals(1, picked.closeCalls)
+    }
+
+    @Test fun identityChangeConfirmationUsesExistingAlias() = runTest {
+        val runtime = RecordingSharingRuntime(
+            sendResult = SharingSendResult.NeedsVerification(
+                fingerprint = "cd".repeat(32),
+                reason = SharingVerificationReason.IDENTITY_CHANGED,
+                existingAlias = "Bob",
+            ),
+        )
+        val picked = BytesSharingFile("changed.txt", ByteArray(4))
+        val controller = controller(
+            FakeService(LocalStorageState.READY), runtime,
+            object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile = picked },
+        )
+        controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
+        controller.startSharingSender(); controller.selectSharingFile(); advanceUntilIdle()
+        controller.enterSharingReferenceCode(TEST_REFERENCE.value); controller.startSharingTransfer(); advanceUntilIdle()
+        val verification = assertIs<SharingSenderState.VerificationRequired>(assertIs<RootState.SharingSender>(controller.state.value).state)
+        assertEquals("Bob", verification.existingAlias)
+
+        controller.confirmSharingPeer(""); advanceUntilIdle()
+        assertEquals("Bob", runtime.lastAlias)
+        assertIs<SharingSenderState.Preparing>(assertIs<RootState.SharingSender>(controller.state.value).state)
+    }
+
+    @Test fun dismissVerificationClearsRuntimePendingTrustAndKeepsRoute() = runTest {
+        val runtime = RecordingSharingRuntime(
+            sendResult = SharingSendResult.NeedsVerification("ef".repeat(32)),
+        )
+        val picked = BytesSharingFile("dismiss.txt", ByteArray(1))
+        val controller = controller(
+            FakeService(LocalStorageState.READY), runtime,
+            object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile = picked },
+        )
+        controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
+        controller.startSharingSender(); controller.selectSharingFile(); advanceUntilIdle()
+        controller.enterSharingReferenceCode(TEST_REFERENCE.value); controller.startSharingTransfer(); advanceUntilIdle()
+        controller.dismissSharingVerification(); advanceUntilIdle()
+        assertEquals(1, runtime.dismissCalls)
+        val preparing = assertIs<SharingSenderState.Preparing>(assertIs<RootState.SharingSender>(controller.state.value).state)
+        assertEquals(TEST_REFERENCE.value, preparing.referenceCode)
+    }
+
     @Test fun receiverRejectUsesRuntimeThenDoneReturnsToBrowser() = runTest {
         val runtime = RecordingSharingRuntime()
         val controller = controller(FakeService(LocalStorageState.READY), runtime)
@@ -224,6 +300,7 @@ private class RecordingOpener : VaultFileOpener { var cleanupCalls = 0; override
 private class RecordingSharingRuntime(
     private val activation: SharingRuntimeActivation = SharingRuntimeActivation.Ready(TEST_REFERENCE),
     private val sendResult: SharingSendResult = SharingSendResult.Completed,
+    private val verificationResult: SharingVerificationResult = SharingVerificationResult.Verified,
     private val suspendSend: Boolean = false,
 ) : SharingRuntime {
     private val mutableEvents = MutableSharedFlow<SharingRuntimeEvent>(extraBufferCapacity = 16)
@@ -231,12 +308,15 @@ private class RecordingSharingRuntime(
 
     var activateCalls = 0
     var sendCalls = 0
+    var confirmCalls = 0
+    var dismissCalls = 0
     var acceptCalls = 0
     var rejectCalls = 0
     var cancelCalls = 0
     var deactivateCalls = 0
     var closeCalls = 0
     var lastReferenceCode: ReferenceCode? = null
+    var lastAlias: String? = null
 
     suspend fun emit(event: SharingRuntimeEvent) { mutableEvents.emit(event) }
 
@@ -254,13 +334,21 @@ private class RecordingSharingRuntime(
         lastReferenceCode = referenceCode
         return try {
             if (suspendSend) awaitCancellation()
-            onProgress(SharingProgress(file.size, file.size, 1, 1))
+            if (sendResult == SharingSendResult.Completed) {
+                onProgress(SharingProgress(file.size, file.size, 1, 1))
+            }
             sendResult
         } finally {
             file.close()
         }
     }
 
+    override suspend fun confirmPendingPeer(alias: String): SharingVerificationResult {
+        confirmCalls++
+        lastAlias = alias
+        return verificationResult
+    }
+    override suspend fun dismissPendingPeerVerification() { dismissCalls++ }
     override suspend fun acceptIncoming() { acceptCalls++ }
     override suspend fun rejectIncoming() { rejectCalls++ }
     override suspend fun cancelCurrent() { cancelCalls++ }
