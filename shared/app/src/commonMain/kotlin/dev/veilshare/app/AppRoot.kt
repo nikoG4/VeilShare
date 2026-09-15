@@ -11,6 +11,7 @@ import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.FoundationScreen
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
+import dev.veilshare.ui.features.RootState
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingRuntime
@@ -18,6 +19,7 @@ import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 
 private object UnavailableSharingFilePicker : SharingFilePicker {
     override suspend fun pickFile(): SharingPickedFile? = null
@@ -30,6 +32,7 @@ data class AppEnvironment(
     val sharingFilePicker: SharingFilePicker = UnavailableSharingFilePicker,
     val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
     val lockSignals: Flow<Unit> = emptyFlow(),
+    val externalImportSignals: Flow<Unit> = emptyFlow(),
 )
 
 @Composable
@@ -48,6 +51,12 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
     LaunchedEffect(controller) { controller.initialize() }
     LaunchedEffect(controller, environment.lockSignals) {
         environment.lockSignals.collect { controller.lock() }
+    }
+    LaunchedEffect(controller, environment.externalImportSignals) {
+        environment.externalImportSignals.collect {
+            controller.state.first { it is RootState.Unlocked }
+            controller.importFile()
+        }
     }
     DisposableEffect(controller) { onDispose { controller.close() } }
     VeilTheme { FoundationScreen(controller, windowClass) }
