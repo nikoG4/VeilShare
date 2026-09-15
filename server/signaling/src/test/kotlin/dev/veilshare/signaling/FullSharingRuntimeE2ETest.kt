@@ -48,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -92,28 +93,30 @@ class FullSharingRuntimeE2ETest {
             val selected = BytesSharingFile("multi-chunk.bin", payload)
             val senderProgress = mutableListOf<SharingProgress>()
 
-            val receiving = async(start = CoroutineStart.UNDISPATCHED) {
-                withTimeout(30_000) {
-                    val offer = bob.runtime.events
-                        .filterIsInstance<SharingRuntimeEvent.IncomingOffer>()
-                        .first()
-                    assertEquals("Alice", offer.senderIdentity)
-                    assertEquals(selected.displayName, offer.fileName)
-                    assertEquals(payload.size.toLong(), offer.fileSize)
-                    bob.runtime.acceptIncoming()
-                }
-            }
-
-            val sending = async {
-                withTimeout(30_000) {
-                    alice.runtime.send(bobActivation.referenceCode, selected) { progress ->
-                        senderProgress += progress
+            coroutineScope {
+                val receiving = async(start = CoroutineStart.UNDISPATCHED) {
+                    withTimeout(30_000) {
+                        val offer = bob.runtime.events
+                            .filterIsInstance<SharingRuntimeEvent.IncomingOffer>()
+                            .first()
+                        assertEquals("Alice", offer.senderIdentity)
+                        assertEquals(selected.displayName, offer.fileName)
+                        assertEquals(payload.size.toLong(), offer.fileSize)
+                        bob.runtime.acceptIncoming()
                     }
                 }
-            }
 
-            assertIs<SharingSendResult.Completed>(sending.await())
-            receiving.await()
+                val sending = async {
+                    withTimeout(30_000) {
+                        alice.runtime.send(bobActivation.referenceCode, selected) { progress ->
+                            senderProgress += progress
+                        }
+                    }
+                }
+
+                assertIs<SharingSendResult.Completed>(sending.await())
+                receiving.await()
+            }
 
             assertEquals(1, selected.closeCalls, "runtime must close sender source exactly once")
             assertTrue(senderProgress.any { it.totalChunks >= 2 }, "transfer must exercise multiple chunks")
