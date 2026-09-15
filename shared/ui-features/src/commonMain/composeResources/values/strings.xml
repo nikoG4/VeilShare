@@ -21,6 +21,7 @@
     <string name="import_file">Importar archivo</string>
     <string name="local_storage">Almacenamiento local</string>
     <string name="cancel">Cancelar</string>
+    <string name="back">Volver</string>
     <string name="folder">Carpeta</string>
     <string name="file">Archivo</string>
     <string name="more">Más</string>
@@ -69,6 +70,16 @@
     <string name="share_error_title">Error</string>
     <string name="retry">Reintentar</string>
     <string name="done">Listo</string>
+
+    <string name="share_verify_title">Verifica la identidad</string>
+    <string name="share_verify_new_description">Es la primera vez que compartes con este contacto. Compara este fingerprint por un canal independiente antes de confiar.</string>
+    <string name="share_verify_changed_description">La identidad asociada a este código cambió. No continúes hasta confirmar el nuevo fingerprint directamente con tu contacto.</string>
+    <string name="share_fingerprint">Fingerprint</string>
+    <string name="share_verify_out_of_band">Compara todos los grupos, por ejemplo en persona, llamada o un canal ya confiable.</string>
+    <string name="share_reference_is_not_identity">El código de referencia sólo sirve para localizar al dispositivo; no demuestra su identidad.</string>
+    <string name="share_contact_name">Nombre del contacto</string>
+    <string name="share_existing_contact">Contacto guardado: %1$s</string>
+    <string name="share_confirm_identity">Confirmar identidad</string>
 
     <string name="share_receiver_waiting_title">Esperando transferencia</string>
     <string name="share_receiver_waiting_description">Comparte este código con el remitente: %1$s</string>
