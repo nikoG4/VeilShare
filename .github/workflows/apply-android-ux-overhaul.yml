@@ -19,7 +19,7 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - name: Apply objective batch
-        run: python tools/apply_android_ux_overhaul.py
+        run: python tools/run_android_ux_overhaul.py
       - name: Check patch hygiene
         run: git diff --check
       - name: Validate core ordering and controller recovery
