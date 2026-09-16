@@ -10,7 +10,7 @@ import dev.veilshare.ui.design.VeilWindowClass
 
 /**
  * Owns the visual composition for the app while keeping shared:app dependent only on
- * Compose runtime. Foundation/Material/UI APIs belong in ui-features.
+ * Compose runtime. Foundation/Material/UI APIs and transient overlays belong here.
  */
 @Composable
 fun AppUiHost(
