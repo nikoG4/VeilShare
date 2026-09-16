@@ -26,6 +26,8 @@ data class BrowserState(
     val currentFolderId: String? = null,
     val breadcrumbs: List<Breadcrumb> = listOf(Breadcrumb(null, "Archivos")),
     val items: List<BrowserItem> = emptyList(),
+    /** All image/video files in this vault, recursively indexed for the Gallery tab. */
+    val mediaItems: List<BrowserItem> = emptyList(),
     val operation: BrowserOperation = BrowserOperation.Idle,
     val message: String? = null,
 )
@@ -119,6 +121,12 @@ interface SharingFilePicker { suspend fun pickFile(): SharingPickedFile? }
 interface SharingReferenceCodeInput { suspend fun getReferenceCode(): String? }
 interface SharingNotificationPresenter { fun showIncomingTransfer(senderIdentity: String, fileName: String, fileSize: Long) }
 
+data class SharingContactSummary(
+    val alias: String,
+    val fingerprint: String,
+    val referenceCode: String? = null,
+)
+
 sealed interface SharingRuntimeActivation {
     data class Ready(val referenceCode: ReferenceCode) : SharingRuntimeActivation
     data class Unavailable(val reason: String? = null) : SharingRuntimeActivation
@@ -169,6 +177,9 @@ interface SharingRuntime : AutoCloseable {
      */
     suspend fun refreshPresence(): SharingRuntimeActivation
 
+    /** Snapshot of explicitly verified/pinned contacts for Contacts UI. */
+    suspend fun trustedContacts(): List<SharingContactSummary> = emptyList()
+
     /** Performs only LOOKUP + trust evaluation. It never starts a handshake or transfer. */
     suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult
 
@@ -195,6 +206,8 @@ object UnavailableSharingRuntime : SharingRuntime {
 
     override suspend fun refreshPresence(): SharingRuntimeActivation =
         SharingRuntimeActivation.Unavailable("Sharing runtime is not configured")
+
+    override suspend fun trustedContacts(): List<SharingContactSummary> = emptyList()
 
     override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult =
         SharingPeerLookupResult.Unavailable("Sharing runtime is not configured")
