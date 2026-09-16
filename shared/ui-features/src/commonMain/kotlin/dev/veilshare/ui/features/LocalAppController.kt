@@ -36,6 +36,7 @@ class LocalAppController(
     private var sharingEventsJob: Job? = null
     private var selectedSharingFile: SharingPickedFile? = null
     private var ownSharingReferenceCode: dev.veilshare.core.model.ReferenceCode? = null
+    private var deleteOriginalAfterImport = false
 
     suspend fun initialize() {
         ensureSharingEvents()
@@ -104,12 +105,19 @@ class LocalAppController(
     fun createFolder(name: String) = mutate("Creando carpeta…") { vault, current -> vault.createDirectory(current.currentFolderId?.let(::VaultDirectoryId), name) }
     fun rename(id: String, name: String) = mutate("Guardando…") { vault, _ -> vault.rename(VaultItemId(id), name) }
 
+    fun setDeleteOriginalAfterImport(enabled: Boolean) {
+        deleteOriginalAfterImport = enabled
+    }
+
     fun importFile() {
         val state = mutableState.value as? RootState.Unlocked ?: return
         if (importJob?.isActive == true || state.browser.operation !is BrowserOperation.Idle) return
         val folder = state.browser.currentFolderId?.let(::VaultDirectoryId)
         importJob = scope.launch {
             try {
+                val deleteOriginal = deleteOriginalAfterImport
+                deleteOriginalAfterImport = false
+                picker.setDeleteOriginalAfterImport(deleteOriginal)
                 val source = picker.pick() ?: return@launch
                 withContext(workDispatcher) { activeOrThrow().import(source, folder) { progress ->
                     val current = (mutableState.value as? RootState.Unlocked)?.browser ?: return@import
@@ -168,6 +176,8 @@ class LocalAppController(
         closeSelectedSharingFileAsync()
         ownSharingReferenceCode = null
         activePersonaId = null
+        deleteOriginalAfterImport = false
+        picker.setDeleteOriginalAfterImport(false)
         mutableContacts.value = emptyList()
         scope.launch {
             withContext(NonCancellable + workDispatcher) {
