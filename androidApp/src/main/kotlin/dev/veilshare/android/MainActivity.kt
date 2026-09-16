@@ -78,6 +78,7 @@ class MainActivity : FragmentActivity() {
             sharingRuntime = sharingRuntime,
             quickUnlock = AndroidBiometricQuickUnlock(this),
             mediaPreview = mediaPreview,
+            referenceQr = AndroidReferenceCodeQrProvider(),
             lockSignals = lockSignals,
             externalImportSignals = externalImportSignals.receiveAsFlow(),
         )
@@ -112,7 +113,6 @@ class MainActivity : FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // System picker transitions are not treated as abandonment of the session.
         if (!isChangingConfigurations && !picker.inFlight) lockSignals.tryEmit(Unit)
     }
 }
@@ -196,11 +196,6 @@ internal class AndroidUriImportSource(
     }
 }
 
-/**
- * SAF-backed source owned by the sharing runtime after send(). No plaintext cache copy is
- * created. Reads are normally sequential; a retry/backward offset safely reopens and seeks
- * the provider stream from the beginning.
- */
 internal class AndroidUriSharingFile(
     private val resolver: ContentResolver,
     private val uri: Uri,
@@ -297,7 +292,6 @@ internal class AndroidOwnedPlaintextCache(internal val root: File) {
 
     fun create(suffix: String): File = File.createTempFile("item-", suffix, root)
 
-    /** Best effort: lock/startup must remain available even if the OS keeps a file busy. */
     fun cleanup(): Boolean {
         val children = root.listFiles() ?: return !root.exists() || root.isDirectory
         return children.fold(true) { clean, child -> child.deleteRecursively() && clean }
