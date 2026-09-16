@@ -15,12 +15,14 @@ import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.MediaPreviewProvider
 import dev.veilshare.ui.features.QuickUnlockProvider
 import dev.veilshare.ui.features.QuickUnlockScreen
+import dev.veilshare.ui.features.ReferenceCodeQrProvider
 import dev.veilshare.ui.features.RootState
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingRuntime
 import dev.veilshare.ui.features.UnavailableMediaPreviewProvider
 import dev.veilshare.ui.features.UnavailableQuickUnlockProvider
+import dev.veilshare.ui.features.UnavailableReferenceCodeQrProvider
 import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import dev.veilshare.ui.features.WorkspaceFoundationScreen
@@ -40,6 +42,7 @@ data class AppEnvironment(
     val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
     val quickUnlock: QuickUnlockProvider = UnavailableQuickUnlockProvider,
     val mediaPreview: MediaPreviewProvider = UnavailableMediaPreviewProvider,
+    val referenceQr: ReferenceCodeQrProvider = UnavailableReferenceCodeQrProvider,
     val lockSignals: Flow<Unit> = emptyFlow(),
     val externalImportSignals: Flow<Unit> = emptyFlow(),
 )
@@ -84,7 +87,7 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
     VeilTheme {
         when (val value = root) {
             is RootState.Locked -> QuickUnlockScreen(value, controller)
-            else -> WorkspaceFoundationScreen(controller, windowClass, environment.mediaPreview)
+            else -> WorkspaceFoundationScreen(controller, windowClass, environment.mediaPreview, environment.referenceQr)
         }
     }
 }
