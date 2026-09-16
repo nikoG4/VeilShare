@@ -207,8 +207,8 @@ class DefaultSharingRuntime(
     override suspend fun trustedContacts(): List<SharingContactSummary> = contacts.all().map { contact ->
         SharingContactSummary(
             alias = contact.alias,
-            fingerprint = contact.identity.fingerprint.value,
-            referenceCode = contact.lastReferenceCode?.value,
+            fingerprint = contact.fingerprint.value,
+            referenceCode = contact.referenceCode?.value,
         )
     }
 
