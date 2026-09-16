@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.fragment.app.FragmentActivity
 import dev.veilshare.app.AppEnvironment
 import dev.veilshare.app.AppRoot
 import dev.veilshare.app.createAndroidSharingRuntime
@@ -41,7 +42,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val lockSignals = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val externalImportSignals = Channel<Unit>(capacity = Channel.BUFFERED)
     private lateinit var picker: AndroidDocumentPicker
@@ -70,6 +71,7 @@ class MainActivity : ComponentActivity() {
             opener = AndroidFileOpener(this, openCache),
             sharingFilePicker = picker,
             sharingRuntime = sharingRuntime,
+            quickUnlock = AndroidBiometricQuickUnlock(this),
             lockSignals = lockSignals,
             externalImportSignals = externalImportSignals.receiveAsFlow(),
         )
