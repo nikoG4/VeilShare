@@ -6,7 +6,7 @@ source = source_path.read_text(encoding="utf-8")
 
 start = source.index('import_coordinator = "shared/core-vault/src/commonMain/kotlin/dev/veilshare/core/vault/ImportCoordinator.kt"')
 end = source.index('# ---------------------------------------------------------------------------\n# UI/runtime contract extensions:', start)
-fixed_import_section = r'''import_coordinator = "shared/core-vault/src/commonMain/kotlin/dev/veilshare/core/vault/ImportCoordinator.kt"
+fixed_import_section = r"""import_coordinator = "shared/core-vault/src/commonMain/kotlin/dev/veilshare/core/vault/ImportCoordinator.kt"
 replace_once(
     import_coordinator,
     "interface ImportSource { val displayName:String; val mimeHint:String?; val sizeHint:Long?; suspend fun openRead():ImportReadHandle }",
@@ -31,7 +31,7 @@ replace_once(
             progress(ImportProgress.Complete(entry)); return next to entry''',
 )
 
-'''
+"""
 source = source[:start] + fixed_import_section + source[end:]
-compile(source, str(source_path), "exec")
-exec(compile(source, str(source_path), "exec"), {"__file__": str(source_path), "__name__": "__main__"})
+compiled = compile(source, str(source_path), "exec")
+exec(compiled, {"__file__": str(source_path), "__name__": "__main__"})
