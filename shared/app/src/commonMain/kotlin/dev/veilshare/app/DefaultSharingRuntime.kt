@@ -43,6 +43,7 @@ import dev.veilshare.core.transfer.TransferSource
 import dev.veilshare.core.transfer.TrustedOutboundHandshakeCompleter
 import dev.veilshare.core.transfer.TrustedOutboundSessionStarter
 import dev.veilshare.core.vault.VaultHandle
+import dev.veilshare.ui.features.SharingContactSummary
 import dev.veilshare.ui.features.SharingPeerLookupResult
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingProgress
@@ -201,6 +202,14 @@ class DefaultSharingRuntime(
         } catch (_: Throwable) {
             SharingRuntimeActivation.Unavailable("No se pudo restablecer el canal de compartir.")
         }
+    }
+
+    override suspend fun trustedContacts(): List<SharingContactSummary> = contacts.all().map { contact ->
+        SharingContactSummary(
+            alias = contact.alias,
+            fingerprint = contact.identity.fingerprint.value,
+            referenceCode = contact.lastReferenceCode?.value,
+        )
     }
 
     override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
