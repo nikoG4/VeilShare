@@ -23,7 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Produces gallery thumbnails without ever materializing plaintext media on disk.
+ * Produces gallery/viewer images without ever materializing plaintext media on disk.
  * The cache contains only downsampled Bitmaps and is cleared as soon as the vault locks.
  */
 internal class AndroidVaultMediaPreviewProvider : MediaPreviewProvider {
@@ -45,10 +45,11 @@ internal class AndroidVaultMediaPreviewProvider : MediaPreviewProvider {
 
     override suspend fun load(itemId: String, maxDimensionPx: Int): ImageBitmap? = withContext(Dispatchers.IO) {
         if (maxDimensionPx <= 0) return@withContext null
-        cache.get(itemId)?.let { return@withContext it.asImageBitmap() }
+        val cacheKey = "$itemId@$maxDimensionPx"
+        cache.get(cacheKey)?.let { return@withContext it.asImageBitmap() }
 
         decodeMutex.withLock {
-            cache.get(itemId)?.let { return@withLock it.asImageBitmap() }
+            cache.get(cacheKey)?.let { return@withLock it.asImageBitmap() }
             val vault = synchronized(bindingLock) { boundVault } ?: return@withLock null
             if (!vault.isOpen) return@withLock null
             val file = runCatching { vault.find(VaultItemId(itemId)) as? VaultItem.File }.getOrNull()
@@ -81,7 +82,7 @@ internal class AndroidVaultMediaPreviewProvider : MediaPreviewProvider {
 
             val stillBound = synchronized(bindingLock) { boundVault === vault && vault.isOpen }
             if (!stillBound) return@withLock null
-            cache.put(itemId, bitmap)
+            cache.put(cacheKey, bitmap)
             bitmap.asImageBitmap()
         }
     }
@@ -130,7 +131,7 @@ internal class AndroidVaultMediaPreviewProvider : MediaPreviewProvider {
     }
 
     private companion object {
-        const val PREVIEW_CACHE_KIB = 24 * 1024
+        const val PREVIEW_CACHE_KIB = 32 * 1024
         const val MAX_PREVIEW_SOURCE_BYTES = 64L * 1024 * 1024
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp")
     }
