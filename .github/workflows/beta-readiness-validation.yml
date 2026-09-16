@@ -10,46 +10,11 @@ on:
 permissions:
   contents: read
 
-jobs:
-  apply-android-ux:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-      - run: chmod +x gradlew
-      - name: Apply objective batch
-        run: python tools/apply_android_ux_overhaul.py
-      - name: Check patch hygiene
-        run: git diff --check
-      - name: Validate core ordering and controller recovery
-        run: >-
-          ./gradlew
-          :shared:core-vault:desktopTest
-          :shared:ui-features:desktopTest
-          :shared:app:desktopTest
-          --no-daemon --stacktrace
-      - name: Validate Android release-check compilation
-        run: >-
-          ./gradlew
-          :shared:app:compileDebugKotlinAndroid
-          :shared:ui-features:compileDebugKotlinAndroid
-          :androidApp:assembleReleaseCheck
-          -Pveilshare.signalingUrl=wss://veilshare-signaling-production.up.railway.app/v1/ws
-          --no-daemon --stacktrace
-      - name: Commit validated batch
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'feat: complete Android UX overhaul objectives'
-          git push
+concurrency:
+  group: beta-readiness-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
   regression:
     runs-on: ubuntu-latest
     steps:
