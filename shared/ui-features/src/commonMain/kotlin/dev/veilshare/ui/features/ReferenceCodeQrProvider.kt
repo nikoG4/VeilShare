@@ -1,5 +1,6 @@
 package dev.veilshare.ui.features
 
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.ImageBitmap
 
 /** Platform QR renderer for the short-lived sharing reference code. */
@@ -11,4 +12,8 @@ interface ReferenceCodeQrProvider {
 object UnavailableReferenceCodeQrProvider : ReferenceCodeQrProvider {
     override val available: Boolean = false
     override suspend fun render(referenceCode: String, sizePx: Int): ImageBitmap? = null
+}
+
+val LocalReferenceCodeQrProvider = staticCompositionLocalOf<ReferenceCodeQrProvider> {
+    UnavailableReferenceCodeQrProvider
 }
