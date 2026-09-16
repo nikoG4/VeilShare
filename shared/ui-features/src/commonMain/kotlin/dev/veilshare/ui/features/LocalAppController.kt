@@ -26,7 +26,10 @@ class LocalAppController(
 ) : AutoCloseable {
     private val mutableState = MutableStateFlow<RootState>(RootState.Initializing)
     val state: StateFlow<RootState> = mutableState.asStateFlow()
+    private val mutableContacts = MutableStateFlow<List<SharingContactSummary>>(emptyList())
+    val contacts: StateFlow<List<SharingContactSummary>> = mutableContacts.asStateFlow()
     private var active: VaultHandle? = null
+    private var activePersonaId: dev.veilshare.core.model.LocalPersonaId? = null
     private var importJob: Job? = null
     private var sharingJob: Job? = null
     private var sharingEventsJob: Job? = null
@@ -73,6 +76,7 @@ class LocalAppController(
                     is LocalUnlockResult.Ready -> {
                         active?.close()
                         active = result.vault
+                        activePersonaId = result.personaId
                         mutableState.value = RootState.Unlocked(browserState(result.vault, null))
                         ownSharingReferenceCode = result.personaId?.let { personaId ->
                             try {
@@ -86,6 +90,7 @@ class LocalAppController(
                                 null
                             }
                         }
+                        refreshContactsAsync()
                     }
                 }
             } catch (_: Exception) { mutableState.value = RootState.Locked(error = "No se pudo continuar.") }
@@ -160,6 +165,8 @@ class LocalAppController(
         sharingJob?.cancel(); sharingJob = null
         closeSelectedSharingFileAsync()
         ownSharingReferenceCode = null
+        activePersonaId = null
+        mutableContacts.value = emptyList()
         scope.launch {
             withContext(NonCancellable + workDispatcher) {
                 runCatching { sharingRuntime.dismissPendingPeerVerification() }
@@ -180,12 +187,6 @@ class LocalAppController(
 
     fun startSharingSender() {
         if (mutableState.value !is RootState.Unlocked) return
-        if (ownSharingReferenceCode == null) {
-            mutableState.value = RootState.SharingSender(
-                SharingSenderState.Error("Compartir no está disponible en esta sesión.", canRetry = false),
-            )
-            return
-        }
         mutableState.value = RootState.SharingSender(SharingSenderState.Preparing())
     }
 
@@ -221,11 +222,22 @@ class LocalAppController(
             return
         }
 
-        // Runtime owns the file from this point and must close it exactly once.
         selectedSharingFile = null
         mutableState.value = RootState.SharingSender(SharingSenderState.Connecting(referenceCode))
         sharingJob = scope.launch {
             try {
+                val presence = withContext(workDispatcher) { ensureSharingPresence() }
+                if (presence !is SharingRuntimeActivation.Ready) {
+                    withContext(NonCancellable + workDispatcher) { runCatching { file.close() } }
+                    mutableState.value = RootState.SharingSender(
+                        SharingSenderState.Error(
+                            (presence as? SharingRuntimeActivation.Unavailable)?.reason
+                                ?: "No se pudo restablecer el canal de compartir.",
+                        ),
+                    )
+                    return@launch
+                }
+                // Runtime owns the file from this point and must close it exactly once.
                 val result = withContext(workDispatcher) {
                     sharingRuntime.send(referenceCode, file) { progress ->
                         mutableState.value = RootState.SharingSender(SharingSenderState.Sending(progress))
@@ -277,9 +289,12 @@ class LocalAppController(
         sharingJob = scope.launch {
             try {
                 when (val result = withContext(workDispatcher) { sharingRuntime.confirmPendingPeer(safeAlias) }) {
-                    SharingVerificationResult.Verified -> mutableState.value = RootState.SharingSender(
-                        SharingSenderState.Preparing(referenceCode = verification.referenceCode.value),
-                    )
+                    SharingVerificationResult.Verified -> {
+                        mutableState.value = RootState.SharingSender(
+                            SharingSenderState.Preparing(referenceCode = verification.referenceCode.value),
+                        )
+                        refreshContactsAsync()
+                    }
                     is SharingVerificationResult.Failed -> mutableState.value = RootState.SharingSender(
                         verification.copy(busy = false, error = result.reason ?: "No se pudo guardar la verificación."),
                     )
@@ -307,12 +322,6 @@ class LocalAppController(
 
     fun startContactVerification() {
         if (mutableState.value !is RootState.Unlocked) return
-        if (ownSharingReferenceCode == null) {
-            mutableState.value = RootState.SharingContactVerification(
-                SharingContactVerificationState.Entering(error = "Compartir no está disponible en esta sesión."),
-            )
-            return
-        }
         mutableState.value = RootState.SharingContactVerification(SharingContactVerificationState.Entering())
     }
 
@@ -338,6 +347,18 @@ class LocalAppController(
         mutableState.value = RootState.SharingContactVerification(entering.copy(busy = true, error = null))
         sharingJob = scope.launch {
             try {
+                val presence = withContext(workDispatcher) { ensureSharingPresence() }
+                if (presence !is SharingRuntimeActivation.Ready) {
+                    mutableState.value = RootState.SharingContactVerification(
+                        entering.copy(
+                            referenceCode = referenceCode.value,
+                            busy = false,
+                            error = (presence as? SharingRuntimeActivation.Unavailable)?.reason
+                                ?: "No se pudo restablecer el canal de compartir.",
+                        ),
+                    )
+                    return@launch
+                }
                 mutableState.value = when (val result = withContext(workDispatcher) { sharingRuntime.inspectPeer(referenceCode) }) {
                     is SharingPeerLookupResult.Trusted -> RootState.SharingContactVerification(
                         SharingContactVerificationState.Completed(result.alias),
@@ -392,9 +413,12 @@ class LocalAppController(
         sharingJob = scope.launch {
             try {
                 when (val result = withContext(workDispatcher) { sharingRuntime.confirmPendingPeer(safeAlias) }) {
-                    SharingVerificationResult.Verified -> mutableState.value = RootState.SharingContactVerification(
-                        SharingContactVerificationState.Completed(safeAlias),
-                    )
+                    SharingVerificationResult.Verified -> {
+                        mutableState.value = RootState.SharingContactVerification(
+                            SharingContactVerificationState.Completed(safeAlias),
+                        )
+                        refreshContactsAsync()
+                    }
                     is SharingVerificationResult.Failed -> mutableState.value = RootState.SharingContactVerification(
                         verification.copy(busy = false, error = result.reason ?: "No se pudo guardar la verificación."),
                     )
@@ -452,37 +476,23 @@ class LocalAppController(
     fun startSharingReceiver() {
         if (mutableState.value !is RootState.Unlocked) return
         if (sharingJob?.isActive == true) return
-        val referenceCode = ownSharingReferenceCode
-        if (referenceCode == null) {
-            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Error("Compartir no está disponible en esta sesión."))
-            return
-        }
-        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
         sharingJob = scope.launch {
             try {
-                when (val refreshed = withContext(workDispatcher) { sharingRuntime.refreshPresence() }) {
+                when (val presence = withContext(workDispatcher) { ensureSharingPresence() }) {
                     is SharingRuntimeActivation.Ready -> {
-                        ownSharingReferenceCode = refreshed.referenceCode
-                        if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {
-                            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(refreshed.referenceCode))
-                        }
+                        ownSharingReferenceCode = presence.referenceCode
+                        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(presence.referenceCode))
                     }
-                    is SharingRuntimeActivation.Unavailable -> {
-                        if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {
-                            mutableState.value = RootState.SharingReceiver(
-                                SharingReceiverState.Error(refreshed.reason ?: "No se pudo restablecer el canal de compartir."),
-                            )
-                        }
-                    }
+                    is SharingRuntimeActivation.Unavailable -> mutableState.value = RootState.SharingReceiver(
+                        SharingReceiverState.Error(presence.reason ?: "No se pudo restablecer el canal de compartir."),
+                    )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if ((mutableState.value as? RootState.SharingReceiver)?.state is SharingReceiverState.Waiting) {
-                    mutableState.value = RootState.SharingReceiver(
-                        SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),
-                    )
-                }
+                mutableState.value = RootState.SharingReceiver(
+                    SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),
+                )
             } finally {
                 sharingJob = null
             }
@@ -529,6 +539,36 @@ class LocalAppController(
         }
     }
 
+    private suspend fun ensureSharingPresence(): SharingRuntimeActivation {
+        val vault = active ?: return SharingRuntimeActivation.Unavailable("La bóveda está bloqueada.")
+        val personaId = activePersonaId
+            ?: return SharingRuntimeActivation.Unavailable("Compartir no está configurado para esta bóveda.")
+        return try {
+            val activation = if (ownSharingReferenceCode == null) {
+                sharingRuntime.activate(personaId, vault)
+            } else {
+                sharingRuntime.refreshPresence()
+            }
+            if (activation is SharingRuntimeActivation.Ready) ownSharingReferenceCode = activation.referenceCode
+            activation
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            SharingRuntimeActivation.Unavailable("No se pudo restablecer el canal de compartir.")
+        }
+    }
+
+    private fun refreshContactsAsync() {
+        if (active == null) return
+        scope.launch {
+            mutableContacts.value = try {
+                withContext(workDispatcher) { sharingRuntime.trustedContacts() }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+    }
+
     private fun closeSelectedSharingFileAsync() {
         val selected = selectedSharingFile ?: return
         selectedSharingFile = null
@@ -563,10 +603,46 @@ class LocalAppController(
         var cursor = folder?.let { vault.find(VaultItemId(it.value)) as? VaultItem.Directory }
         while (cursor != null) { lineage += cursor; cursor = cursor.parentId?.let { vault.find(VaultItemId(it.value)) as? VaultItem.Directory } }
         lineage.asReversed().forEach { crumbs += Breadcrumb(it.id.value, it.displayName) }
-        return BrowserState(folder?.value, crumbs, vault.items(folder).map {
-            when (it) { is VaultItem.Directory -> BrowserItem(it.id.value, it.displayName, true); is VaultItem.File -> BrowserItem(it.id.value, it.displayName, false, it.size, it.mimeType) }
-        })
+        val currentItems = vault.items(folder).map(::browserItem)
+        return BrowserState(
+            currentFolderId = folder?.value,
+            breadcrumbs = crumbs,
+            items = currentItems,
+            mediaItems = collectMedia(vault),
+        )
     }
+
+    private fun browserItem(item: VaultItem): BrowserItem = when (item) {
+        is VaultItem.Directory -> BrowserItem(item.id.value, item.displayName, true)
+        is VaultItem.File -> BrowserItem(item.id.value, item.displayName, false, item.size, item.mimeType)
+    }
+
+    private fun collectMedia(vault: VaultHandle): List<BrowserItem> {
+        val result = mutableListOf<BrowserItem>()
+        val visitedDirectories = mutableSetOf<String>()
+        fun walk(parent: VaultDirectoryId?) {
+            vault.items(parent).forEach { item ->
+                when (item) {
+                    is VaultItem.Directory -> if (visitedDirectories.add(item.id.value)) {
+                        walk(VaultDirectoryId(item.id.value))
+                    }
+                    is VaultItem.File -> if (item.isGalleryMedia()) result += browserItem(item)
+                }
+            }
+        }
+        walk(null)
+        return result.sortedBy { it.name.lowercase() }
+    }
+
+    private fun VaultItem.File.isGalleryMedia(): Boolean {
+        val type = mimeType?.lowercase()
+        if (type?.startsWith("image/") == true || type?.startsWith("video/") == true) return true
+        return displayName.substringAfterLast('.', "").lowercase() in setOf(
+            "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp",
+            "mp4", "m4v", "mov", "webm", "mkv", "avi",
+        )
+    }
+
     private fun setOperation(operation: BrowserOperation) { val state=mutableState.value as? RootState.Unlocked?:return; mutableState.value=RootState.Unlocked(state.browser.copy(operation=operation,message=null)) }
     private fun setMessage(message: String) { val state=mutableState.value as? RootState.Unlocked?:return; mutableState.value=RootState.Unlocked(state.browser.copy(operation=BrowserOperation.Idle,message=message)) }
     private fun activeOrThrow() = checkNotNull(active) { "Vault is locked" }
