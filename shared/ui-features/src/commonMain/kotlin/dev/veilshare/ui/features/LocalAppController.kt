@@ -23,6 +23,7 @@ class LocalAppController(
     private val sharingRuntime: SharingRuntime,
     private val scope: CoroutineScope,
     private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val quickUnlock: QuickUnlockProvider = UnavailableQuickUnlockProvider,
 ) : AutoCloseable {
     private val mutableState = MutableStateFlow<RootState>(RootState.Initializing)
     val state: StateFlow<RootState> = mutableState.asStateFlow()
@@ -37,6 +38,9 @@ class LocalAppController(
     private var selectedSharingFile: SharingPickedFile? = null
     private var ownSharingReferenceCode: dev.veilshare.core.model.ReferenceCode? = null
     private var deleteOriginalAfterImport = false
+
+    val quickUnlockAvailable: Boolean get() = quickUnlock.available
+    val quickUnlockEnrolled: Boolean get() = quickUnlock.hasCredential
 
     suspend fun initialize() {
         ensureSharingEvents()
@@ -66,16 +70,38 @@ class LocalAppController(
         }
     }
 
-    fun unlock(credential: CharArray) {
-        val state = mutableState.value as? RootState.Locked ?: return
-        if (state.busy) { credential.fill('\u0000'); return }
+    fun unlock(credential: CharArray, enrollQuickUnlock: Boolean = false) {
+        val state = mutableState.value as? RootState.Locked
+        if (state == null) {
+            credential.fill('\u0000')
+            quickUnlock.discardPendingEnrollment()
+            return
+        }
+        if (state.busy) {
+            credential.fill('\u0000')
+            quickUnlock.discardPendingEnrollment()
+            return
+        }
+        if (enrollQuickUnlock && quickUnlock.available) quickUnlock.stageEnrollment(credential)
+        else quickUnlock.discardPendingEnrollment()
         mutableState.value = RootState.Locked(busy = true)
         scope.launch {
             try {
                 when (val result = withContext(workDispatcher) { service.unlock(credential) }) {
-                    LocalUnlockResult.InvalidCredential -> mutableState.value = RootState.Locked(error = "No se pudo continuar.")
-                    LocalUnlockResult.Corrupt -> mutableState.value = RootState.Fatal("No se pudo verificar el almacenamiento local. No se eliminó ningún dato.")
+                    LocalUnlockResult.InvalidCredential -> {
+                        quickUnlock.discardPendingEnrollment()
+                        mutableState.value = RootState.Locked(error = "No se pudo continuar.")
+                    }
+                    LocalUnlockResult.Corrupt -> {
+                        quickUnlock.discardPendingEnrollment()
+                        mutableState.value = RootState.Fatal("No se pudo verificar el almacenamiento local. No se eliminó ningún dato.")
+                    }
                     is LocalUnlockResult.Ready -> {
+                        if (enrollQuickUnlock && quickUnlock.available) {
+                            runCatching { quickUnlock.completePendingEnrollment() }
+                        } else {
+                            quickUnlock.discardPendingEnrollment()
+                        }
                         active?.close()
                         active = result.vault
                         activePersonaId = result.personaId
@@ -95,8 +121,28 @@ class LocalAppController(
                         refreshContactsAsync()
                     }
                 }
-            } catch (_: Exception) { mutableState.value = RootState.Locked(error = "No se pudo continuar.") }
-            finally { credential.fill('\u0000') }
+            } catch (_: Exception) {
+                quickUnlock.discardPendingEnrollment()
+                mutableState.value = RootState.Locked(error = "No se pudo continuar.")
+            } finally {
+                credential.fill('\u0000')
+            }
+        }
+    }
+
+    fun unlockWithQuickUnlock() {
+        val state = mutableState.value as? RootState.Locked ?: return
+        if (state.busy || !quickUnlock.available || !quickUnlock.hasCredential) return
+        mutableState.value = RootState.Locked(busy = true)
+        scope.launch {
+            val credential = try { quickUnlock.requestCredential() } catch (_: Exception) { null }
+            if (credential == null) {
+                mutableState.value = RootState.Locked(error = "No se pudo usar el desbloqueo biométrico. Usa tu código.")
+                return@launch
+            }
+            // Re-enter the single authoritative credential path. unlock() owns and clears it.
+            mutableState.value = RootState.Locked()
+            unlock(credential)
         }
     }
 
@@ -163,8 +209,11 @@ class LocalAppController(
         val vault = active ?: run { clear(newCredential, confirmation); return }
         scope.launch {
             setOperation(BrowserOperation.Busy("Actualizando código…"))
-            try { withContext(workDispatcher) { vault.changeCredential(newCredential) }; lock() }
-            catch (_: Exception) { lock("No se pudo verificar el cambio. Ingresa tu código nuevamente.") }
+            try {
+                withContext(workDispatcher) { vault.changeCredential(newCredential) }
+                runCatching { quickUnlock.clearCredential() }
+                lock()
+            } catch (_: Exception) { lock("No se pudo verificar el cambio. Ingresa tu código nuevamente.") }
             finally { clear(newCredential, confirmation) }
         }
     }
@@ -179,6 +228,7 @@ class LocalAppController(
         deleteOriginalAfterImport = false
         picker.setDeleteOriginalAfterImport(false)
         mutableContacts.value = emptyList()
+        quickUnlock.discardPendingEnrollment()
         scope.launch {
             withContext(NonCancellable + workDispatcher) {
                 runCatching { sharingRuntime.dismissPendingPeerVerification() }
