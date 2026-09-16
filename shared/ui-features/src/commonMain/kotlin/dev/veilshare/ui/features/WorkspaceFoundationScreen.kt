@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -156,6 +157,7 @@ private fun WorkspaceFiles(
     windowClass: VeilWindowClass,
 ) {
     var newFolderOpen by remember { mutableStateOf(false) }
+    var importOptionsOpen by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<BrowserItem?>(null) }
     var deleteTarget by remember { mutableStateOf<BrowserItem?>(null) }
 
@@ -174,7 +176,7 @@ private fun WorkspaceFiles(
         if (windowClass == VeilWindowClass.Compact) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = { newFolderOpen = true }, modifier = Modifier.weight(1f)) { Text("Nueva carpeta") }
-                Button(onClick = controller::importFile, modifier = Modifier.weight(1f)) { Text("Importar") }
+                Button(onClick = { importOptionsOpen = true }, modifier = Modifier.weight(1f)) { Text("Importar") }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = controller::startSharingReceiver, modifier = Modifier.weight(1f)) { Text("Recibir") }
@@ -183,7 +185,7 @@ private fun WorkspaceFiles(
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = { newFolderOpen = true }) { Text("Nueva carpeta") }
-                Button(onClick = controller::importFile) { Text("Importar") }
+                Button(onClick = { importOptionsOpen = true }) { Text("Importar") }
                 OutlinedButton(onClick = controller::startSharingReceiver) { Text("Recibir") }
                 Button(onClick = controller::startSharingSender) { Text("Enviar") }
             }
@@ -227,6 +229,14 @@ private fun WorkspaceFiles(
         controller.createFolder(it)
         newFolderOpen = false
     }
+    if (importOptionsOpen) ImportOptionsDialog(
+        onDismiss = { importOptionsOpen = false },
+        onImport = { deleteOriginal ->
+            controller.setDeleteOriginalAfterImport(deleteOriginal)
+            controller.importFile()
+            importOptionsOpen = false
+        },
+    )
     renameTarget?.let { item ->
         WorkspaceNameDialog(
             title = "Renombrar",
@@ -402,6 +412,40 @@ private fun ContactsScreen(contacts: List<SharingContactSummary>, controller: Lo
             }
         }
     }
+}
+
+@Composable
+private fun ImportOptionsDialog(
+    onDismiss: () -> Unit,
+    onImport: (Boolean) -> Unit,
+) {
+    var deleteOriginal by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Importar archivo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("El archivo se cifra y se guarda en la bóveda antes de intentar modificar el original.")
+                Row(
+                    Modifier.fillMaxWidth().clickable { deleteOriginal = !deleteOriginal },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = deleteOriginal, onCheckedChange = { deleteOriginal = it })
+                    Spacer(Modifier.width(8.dp))
+                    Text("Eliminar el original después de cifrar")
+                }
+                if (deleteOriginal) {
+                    Text(
+                        "Algunos proveedores de Android no permiten borrar el documento. Si el borrado falla, la copia cifrada se conserva y el original permanece intacto.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { onImport(deleteOriginal) }) { Text("Seleccionar archivo") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }
 
 @Composable
