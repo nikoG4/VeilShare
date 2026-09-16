@@ -65,13 +65,19 @@ class MainActivity : FragmentActivity() {
                 )
             }.getOrElse { UnavailableSharingRuntime }
         } ?: UnavailableSharingRuntime
+        val mediaPreview = AndroidVaultMediaPreviewProvider()
+        val vaultService = PreviewTrackingLocalVaultService(
+            AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)),
+            mediaPreview,
+        )
         val environment = AppEnvironment(
-            vaults = AndroidLocalVaultService(AndroidVaultStorage.privateRoot(this)),
+            vaults = vaultService,
             picker = picker,
             opener = AndroidFileOpener(this, openCache),
             sharingFilePicker = picker,
             sharingRuntime = sharingRuntime,
             quickUnlock = AndroidBiometricQuickUnlock(this),
+            mediaPreview = mediaPreview,
             lockSignals = lockSignals,
             externalImportSignals = externalImportSignals.receiveAsFlow(),
         )
