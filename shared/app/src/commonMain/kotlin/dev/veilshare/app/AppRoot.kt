@@ -12,12 +12,14 @@ import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
+import dev.veilshare.ui.features.MediaPreviewProvider
 import dev.veilshare.ui.features.QuickUnlockProvider
 import dev.veilshare.ui.features.QuickUnlockScreen
 import dev.veilshare.ui.features.RootState
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingRuntime
+import dev.veilshare.ui.features.UnavailableMediaPreviewProvider
 import dev.veilshare.ui.features.UnavailableQuickUnlockProvider
 import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
@@ -37,6 +39,7 @@ data class AppEnvironment(
     val sharingFilePicker: SharingFilePicker = UnavailableSharingFilePicker,
     val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
     val quickUnlock: QuickUnlockProvider = UnavailableQuickUnlockProvider,
+    val mediaPreview: MediaPreviewProvider = UnavailableMediaPreviewProvider,
     val lockSignals: Flow<Unit> = emptyFlow(),
     val externalImportSignals: Flow<Unit> = emptyFlow(),
 )
@@ -65,13 +68,23 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
             controller.importFile()
         }
     }
-    DisposableEffect(controller) { onDispose { controller.close() } }
+    DisposableEffect(controller) {
+        onDispose {
+            environment.mediaPreview.clear()
+            controller.close()
+        }
+    }
 
     val root by controller.state.collectAsState()
+    LaunchedEffect(root) {
+        if (root is RootState.Locked || root is RootState.Fatal || root is RootState.FirstRun) {
+            environment.mediaPreview.clear()
+        }
+    }
     VeilTheme {
         when (val value = root) {
             is RootState.Locked -> QuickUnlockScreen(value, controller)
-            else -> WorkspaceFoundationScreen(controller, windowClass)
+            else -> WorkspaceFoundationScreen(controller, windowClass, environment.mediaPreview)
         }
     }
 }
