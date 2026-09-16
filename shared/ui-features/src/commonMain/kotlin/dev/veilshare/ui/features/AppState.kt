@@ -106,6 +106,27 @@ interface LocalFilePicker {
 }
 interface VaultFileOpener { suspend fun open(vault: VaultHandle, file: VaultItem.File); fun cleanup() = Unit }
 
+/** Optional platform boundary for a protected credential shortcut. PIN unlock remains authoritative. */
+interface QuickUnlockProvider {
+    val available: Boolean
+    val hasCredential: Boolean
+    fun stageEnrollment(credential: CharArray)
+    fun discardPendingEnrollment()
+    suspend fun completePendingEnrollment(): Boolean
+    suspend fun requestCredential(): CharArray?
+    fun clearCredential()
+}
+
+object UnavailableQuickUnlockProvider : QuickUnlockProvider {
+    override val available = false
+    override val hasCredential = false
+    override fun stageEnrollment(credential: CharArray) = Unit
+    override fun discardPendingEnrollment() = Unit
+    override suspend fun completePendingEnrollment() = false
+    override suspend fun requestCredential(): CharArray? = null
+    override fun clearCredential() = Unit
+}
+
 /**
  * UI-neutral readable file selected for Sharing V1.
  *
