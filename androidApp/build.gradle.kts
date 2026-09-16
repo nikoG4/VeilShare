@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.9.0")
     implementation(compose.foundation)
     implementation(libs.coroutines.core)
     testImplementation(libs.kotlin.test)
