@@ -98,8 +98,8 @@ internal class AndroidVaultMediaPreviewProvider : MediaPreviewProvider {
         return displayName.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
     }
 
-    private fun decodeDownsampled(bytes: ByteArray, maxDimensionPx: Int): Bitmap? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    private fun decodeDownsampled(bytes: ByteArray, maxDimensionPx: Int): Bitmap? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
             ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                 val width = info.size.width
@@ -118,12 +118,16 @@ internal class AndroidVaultMediaPreviewProvider : MediaPreviewProvider {
         } else {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-            var sample = 1
-            while (max(bounds.outWidth / sample, bounds.outHeight / sample) > maxDimensionPx * 2) sample *= 2
-            val options = BitmapFactory.Options().apply { inSampleSize = sample }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                null
+            } else {
+                var sample = 1
+                while (max(bounds.outWidth / sample, bounds.outHeight / sample) > maxDimensionPx * 2) sample *= 2
+                val options = BitmapFactory.Options().apply { inSampleSize = sample }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            }
         }
+    }
 
     private companion object {
         const val PREVIEW_CACHE_KIB = 24 * 1024
