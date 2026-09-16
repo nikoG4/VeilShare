@@ -1,3 +1,1236 @@
-import base64, zlib
-payload = "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"
-exec(zlib.decompress(base64.b64decode(payload)).decode("utf-8"), {"__file__": __file__, "__name__": "__main__"})
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def read(path):
+    return (ROOT / path).read_text(encoding="utf-8")
+
+def write(path, content):
+    p = ROOT / path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+def replace_once(path, old, new):
+    text = read(path)
+    if old not in text:
+        raise RuntimeError(f"anchor not found in {path}: {old[:120]!r}")
+    if text.count(old) != 1:
+        raise RuntimeError(f"anchor not unique in {path}: {old[:120]!r}")
+    write(path, text.replace(old, new, 1))
+
+def replace_between(path, start, end, replacement):
+    text = read(path)
+    a = text.find(start)
+    if a < 0:
+        raise RuntimeError(f"start anchor not found in {path}: {start!r}")
+    b = text.find(end, a)
+    if b < 0:
+        raise RuntimeError(f"end anchor not found in {path}: {end!r}")
+    write(path, text[:a] + replacement + "\n\n" + text[b:])
+
+# ---------------------------------------------------------------------------
+# Core import contract: optional source deletion occurs only after durable commit.
+# ---------------------------------------------------------------------------
+import_coordinator = "shared/core-vault/src/commonMain/kotlin/dev/veilshare/core/vault/ImportCoordinator.kt"
+replace_once(
+    import_coordinator,
+    '''interface ImportSource {
+    val displayName: String
+    val mimeHint: String?
+    val sizeHint: Long?
+    suspend fun openRead(): ImportReadHandle
+}''',
+    '''interface ImportSource {
+    val displayName: String
+    val mimeHint: String?
+    val sizeHint: Long?
+    /**
+     * Explicit one-shot request from the caller. Implementations must not infer deletion.
+     * Deletion is attempted only after blob + encrypted catalog + journal commit are durable.
+     */
+    val deleteOriginalRequested: Boolean get() = false
+    val originalDeleted: Boolean get() = false
+    suspend fun openRead(): ImportReadHandle
+    suspend fun deleteOriginalAfterCommit(): Boolean = false
+}''',
+)
+replace_once(
+    import_coordinator,
+    '''            journal.append(ImportJournalRecord(txId, ImportStage.COMMITTED, item.id.value, blobId, namespace))
+            fault(ImportFaultPoint.Committed)
+            journal.remove(txId)
+            progress(ImportProgress.Complete(item))
+            item''',
+    '''            journal.append(ImportJournalRecord(txId, ImportStage.COMMITTED, item.id.value, blobId, namespace))
+            fault(ImportFaultPoint.Committed)
+            journal.remove(txId)
+            // Source deletion is deliberately outside the encrypted commit transaction.
+            // A provider refusal/failure must never roll back or invalidate the durable import.
+            if (source.deleteOriginalRequested) runCatching { source.deleteOriginalAfterCommit() }
+            progress(ImportProgress.Complete(item))
+            item''',
+)
+
+# ---------------------------------------------------------------------------
+# UI/runtime contract extensions: media index, contacts and quick unlock boundary.
+# ---------------------------------------------------------------------------
+app_state = "shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/AppState.kt"
+replace_once(
+    app_state,
+    '''data class BrowserState(
+    val currentFolderId: String? = null,
+    val breadcrumbs: List<Breadcrumb> = listOf(Breadcrumb(null, "Archivos")),
+    val items: List<BrowserItem> = emptyList(),
+    val operation: BrowserOperation = BrowserOperation.Idle,
+    val message: String? = null,
+)''',
+    '''data class BrowserState(
+    val currentFolderId: String? = null,
+    val breadcrumbs: List<Breadcrumb> = listOf(Breadcrumb(null, "Archivos")),
+    val items: List<BrowserItem> = emptyList(),
+    /** All image/video files in this vault, recursively indexed for the Gallery tab. */
+    val mediaItems: List<BrowserItem> = emptyList(),
+    val operation: BrowserOperation = BrowserOperation.Idle,
+    val message: String? = null,
+)''',
+)
+replace_once(
+    app_state,
+    '''interface LocalFilePicker { suspend fun pick(): ImportSource? }
+interface VaultFileOpener''',
+    '''interface LocalFilePicker {
+    suspend fun pick(): ImportSource?
+    /** Applies to the next interactive import only. Unsupported platforms may ignore it. */
+    fun setDeleteOriginalAfterImport(enabled: Boolean) = Unit
+}
+interface VaultFileOpener''',
+)
+replace_once(
+    app_state,
+    '''interface SharingNotificationPresenter { fun showIncomingTransfer(senderIdentity: String, fileName: String, fileSize: Long) }
+
+sealed interface SharingRuntimeActivation''',
+    '''interface SharingNotificationPresenter { fun showIncomingTransfer(senderIdentity: String, fileName: String, fileSize: Long) }
+
+data class SharingContactSummary(
+    val alias: String,
+    val fingerprint: String,
+    val referenceCode: String? = null,
+)
+
+/**
+ * Platform boundary for optional biometric quick unlock. PIN unlock remains authoritative
+ * and always available; implementations must persist only protected credential material.
+ */
+interface QuickUnlockProvider {
+    val available: Boolean
+    val hasCredential: Boolean
+    fun stageEnrollment(credential: CharArray)
+    fun discardPendingEnrollment()
+    suspend fun completePendingEnrollment(): Boolean
+    suspend fun requestCredential(): CharArray?
+    fun clearCredential()
+}
+
+object UnavailableQuickUnlockProvider : QuickUnlockProvider {
+    override val available = false
+    override val hasCredential = false
+    override fun stageEnrollment(credential: CharArray) = Unit
+    override fun discardPendingEnrollment() = Unit
+    override suspend fun completePendingEnrollment() = false
+    override suspend fun requestCredential(): CharArray? = null
+    override fun clearCredential() = Unit
+}
+
+sealed interface SharingRuntimeActivation''',
+)
+replace_once(
+    app_state,
+    '''    suspend fun refreshPresence(): SharingRuntimeActivation
+
+    /** Performs only LOOKUP + trust evaluation.''',
+    '''    suspend fun refreshPresence(): SharingRuntimeActivation
+
+    /** Snapshot of explicitly verified/pinned contacts for Contacts UI. */
+    suspend fun trustedContacts(): List<SharingContactSummary> = emptyList()
+
+    /** Performs only LOOKUP + trust evaluation.''',
+)
+
+# ---------------------------------------------------------------------------
+# Controller: resilient sharing activation, contacts, biometric opt-in, gallery.
+# ---------------------------------------------------------------------------
+controller = "shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/LocalAppController.kt"
+replace_once(
+    controller,
+    '''    private val sharingRuntime: SharingRuntime,
+    private val scope: CoroutineScope,
+    private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
+) : AutoCloseable {''',
+    '''    private val sharingRuntime: SharingRuntime,
+    private val scope: CoroutineScope,
+    private val workDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val quickUnlock: QuickUnlockProvider = UnavailableQuickUnlockProvider,
+) : AutoCloseable {''',
+)
+replace_once(
+    controller,
+    '''    val state: StateFlow<RootState> = mutableState.asStateFlow()
+    private var active: VaultHandle? = null''',
+    '''    val state: StateFlow<RootState> = mutableState.asStateFlow()
+    private val mutableContacts = MutableStateFlow<List<SharingContactSummary>>(emptyList())
+    val contacts: StateFlow<List<SharingContactSummary>> = mutableContacts.asStateFlow()
+    private var active: VaultHandle? = null
+    private var activePersonaId: dev.veilshare.core.model.LocalPersonaId? = null
+    private var deleteOriginalAfterImport = false''',
+)
+replace_between(
+    controller,
+    "    fun unlock(credential: CharArray)",
+    "    fun enterFolder",
+    '''    fun unlock(credential: CharArray, enrollQuickUnlock: Boolean = false) {
+        val state = mutableState.value as? RootState.Locked ?: run {
+            credential.fill('\u0000')
+            return
+        }
+        if (state.busy) {
+            credential.fill('\u0000')
+            return
+        }
+        if (enrollQuickUnlock) quickUnlock.stageEnrollment(credential) else quickUnlock.discardPendingEnrollment()
+        mutableState.value = RootState.Locked(busy = true)
+        scope.launch {
+            try {
+                when (val result = withContext(workDispatcher) { service.unlock(credential) }) {
+                    LocalUnlockResult.InvalidCredential -> {
+                        quickUnlock.discardPendingEnrollment()
+                        mutableState.value = RootState.Locked(error = "No se pudo continuar.")
+                    }
+                    LocalUnlockResult.Corrupt -> {
+                        quickUnlock.discardPendingEnrollment()
+                        mutableState.value = RootState.Fatal("No se pudo verificar el almacenamiento local. No se eliminó ningún dato.")
+                    }
+                    is LocalUnlockResult.Ready -> {
+                        active?.close()
+                        active = result.vault
+                        activePersonaId = result.personaId
+                        mutableState.value = RootState.Unlocked(browserState(result.vault, null))
+                        ownSharingReferenceCode = result.personaId?.let { personaId ->
+                            try {
+                                when (val activation = withContext(workDispatcher) {
+                                    sharingRuntime.activate(personaId, result.vault)
+                                }) {
+                                    is SharingRuntimeActivation.Ready -> activation.referenceCode
+                                    is SharingRuntimeActivation.Unavailable -> null
+                                }
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                        refreshContactsAsync()
+                        if (enrollQuickUnlock) runCatching { quickUnlock.completePendingEnrollment() }
+                    }
+                }
+            } catch (_: Exception) {
+                quickUnlock.discardPendingEnrollment()
+                mutableState.value = RootState.Locked(error = "No se pudo continuar.")
+            } finally {
+                credential.fill('\u0000')
+            }
+        }
+    }
+
+    val quickUnlockAvailable: Boolean get() = quickUnlock.available
+    val quickUnlockEnrolled: Boolean get() = quickUnlock.hasCredential
+
+    fun unlockWithQuickUnlock() {
+        val state = mutableState.value as? RootState.Locked ?: return
+        if (state.busy || !quickUnlock.available || !quickUnlock.hasCredential) return
+        mutableState.value = RootState.Locked(busy = true)
+        scope.launch {
+            val credential = try { quickUnlock.requestCredential() } catch (_: Exception) { null }
+            if (credential == null) {
+                mutableState.value = RootState.Locked(error = "No se pudo usar el desbloqueo biométrico. Usa tu código.")
+                return@launch
+            }
+            mutableState.value = RootState.Locked()
+            unlock(credential)
+        }
+    }
+
+    fun setDeleteOriginalAfterImport(enabled: Boolean) {
+        deleteOriginalAfterImport = enabled
+    }
+
+''',
+)
+replace_once(
+    controller,
+    '''        importJob = scope.launch {
+            try {
+                val source = picker.pick() ?: return@launch''',
+    '''        importJob = scope.launch {
+            try {
+                picker.setDeleteOriginalAfterImport(deleteOriginalAfterImport)
+                deleteOriginalAfterImport = false
+                val source = picker.pick() ?: return@launch''',
+)
+replace_once(
+    controller,
+    '''        ownSharingReferenceCode = null
+        scope.launch {''',
+    '''        ownSharingReferenceCode = null
+        activePersonaId = null
+        mutableContacts.value = emptyList()
+        quickUnlock.discardPendingEnrollment()
+        scope.launch {''',
+)
+replace_between(
+    controller,
+    "    fun startSharingSender()",
+    "    fun selectSharingFile()",
+    '''    fun startSharingSender() {
+        if (mutableState.value !is RootState.Unlocked) return
+        mutableState.value = RootState.SharingSender(SharingSenderState.Preparing())
+    }
+
+''',
+)
+replace_once(
+    controller,
+    '''        // Runtime owns the file from this point and must close it exactly once.
+        selectedSharingFile = null
+        mutableState.value = RootState.SharingSender(SharingSenderState.Connecting(referenceCode))
+        sharingJob = scope.launch {
+            try {
+                val result = withContext(workDispatcher) {
+                    sharingRuntime.send(referenceCode, file) { progress ->''',
+    '''        // Runtime owns the file from this point and must close it exactly once.
+        selectedSharingFile = null
+        mutableState.value = RootState.SharingSender(SharingSenderState.Connecting(referenceCode))
+        sharingJob = scope.launch {
+            try {
+                val presence = withContext(workDispatcher) { ensureSharingPresence() }
+                if (presence !is SharingRuntimeActivation.Ready) {
+                    withContext(NonCancellable + workDispatcher) { runCatching { file.close() } }
+                    mutableState.value = RootState.SharingSender(
+                        SharingSenderState.Error(
+                            (presence as? SharingRuntimeActivation.Unavailable)?.reason
+                                ?: "No se pudo restablecer el canal de compartir.",
+                        ),
+                    )
+                    return@launch
+                }
+                val result = withContext(workDispatcher) {
+                    sharingRuntime.send(referenceCode, file) { progress ->''',
+)
+replace_between(
+    controller,
+    "    fun startContactVerification()",
+    "    fun enterContactVerificationReferenceCode",
+    '''    fun startContactVerification() {
+        if (mutableState.value !is RootState.Unlocked) return
+        mutableState.value = RootState.SharingContactVerification(SharingContactVerificationState.Entering())
+    }
+
+''',
+)
+replace_once(
+    controller,
+    '''        mutableState.value = RootState.SharingContactVerification(entering.copy(busy = true, error = null))
+        sharingJob = scope.launch {
+            try {
+                mutableState.value = when (val result = withContext(workDispatcher) { sharingRuntime.inspectPeer(referenceCode) }) {''',
+    '''        mutableState.value = RootState.SharingContactVerification(entering.copy(busy = true, error = null))
+        sharingJob = scope.launch {
+            try {
+                val presence = withContext(workDispatcher) { ensureSharingPresence() }
+                if (presence !is SharingRuntimeActivation.Ready) {
+                    mutableState.value = RootState.SharingContactVerification(
+                        entering.copy(
+                            busy = false,
+                            error = (presence as? SharingRuntimeActivation.Unavailable)?.reason
+                                ?: "No se pudo restablecer el canal de compartir.",
+                        ),
+                    )
+                    return@launch
+                }
+                mutableState.value = when (val result = withContext(workDispatcher) { sharingRuntime.inspectPeer(referenceCode) }) {''',
+)
+replace_once(
+    controller,
+    '''                    SharingVerificationResult.Verified -> mutableState.value = RootState.SharingContactVerification(
+                        SharingContactVerificationState.Completed(safeAlias),
+                    )''',
+    '''                    SharingVerificationResult.Verified -> {
+                        mutableState.value = RootState.SharingContactVerification(
+                            SharingContactVerificationState.Completed(safeAlias),
+                        )
+                        refreshContactsAsync()
+                    }''',
+)
+replace_between(
+    controller,
+    "    fun startSharingReceiver()",
+    "    fun acceptIncomingSharing()",
+    '''    fun startSharingReceiver() {
+        if (mutableState.value !is RootState.Unlocked) return
+        if (sharingJob?.isActive == true) return
+        sharingJob = scope.launch {
+            try {
+                when (val presence = withContext(workDispatcher) { ensureSharingPresence() }) {
+                    is SharingRuntimeActivation.Ready -> {
+                        ownSharingReferenceCode = presence.referenceCode
+                        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(presence.referenceCode))
+                    }
+                    is SharingRuntimeActivation.Unavailable -> mutableState.value = RootState.SharingReceiver(
+                        SharingReceiverState.Error(presence.reason ?: "No se pudo restablecer el canal de compartir."),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.value = RootState.SharingReceiver(
+                    SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),
+                )
+            } finally {
+                sharingJob = null
+            }
+        }
+    }
+
+''',
+)
+replace_once(
+    controller,
+    '''    private fun closeSelectedSharingFileAsync() {''',
+    '''    private suspend fun ensureSharingPresence(): SharingRuntimeActivation {
+        val vault = active ?: return SharingRuntimeActivation.Unavailable("La bóveda está bloqueada.")
+        val personaId = activePersonaId ?: return SharingRuntimeActivation.Unavailable("Compartir no está configurado para esta bóveda.")
+        return try {
+            val activation = if (ownSharingReferenceCode == null) {
+                sharingRuntime.activate(personaId, vault)
+            } else {
+                sharingRuntime.refreshPresence()
+            }
+            if (activation is SharingRuntimeActivation.Ready) ownSharingReferenceCode = activation.referenceCode
+            activation
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            SharingRuntimeActivation.Unavailable("No se pudo restablecer el canal de compartir.")
+        }
+    }
+
+    private fun refreshContactsAsync() {
+        if (active == null) return
+        scope.launch {
+            mutableContacts.value = try {
+                withContext(workDispatcher) { sharingRuntime.trustedContacts() }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    private fun closeSelectedSharingFileAsync() {''',
+)
+replace_once(
+    controller,
+    '''        return BrowserState(folder?.value, crumbs, vault.items(folder).map {
+            when (it) { is VaultItem.Directory -> BrowserItem(it.id.value, it.displayName, true); is VaultItem.File -> BrowserItem(it.id.value, it.displayName, false, it.size, it.mimeType) }
+        })''',
+    '''        val currentItems = vault.items(folder).map(::browserItem)
+        val media = collectMedia(vault)
+        return BrowserState(folder?.value, crumbs, currentItems, mediaItems = media)
+    }
+    private fun browserItem(item: VaultItem): BrowserItem = when (item) {
+        is VaultItem.Directory -> BrowserItem(item.id.value, item.displayName, true)
+        is VaultItem.File -> BrowserItem(item.id.value, item.displayName, false, item.size, item.mimeType)
+    }
+    private fun collectMedia(vault: VaultHandle): List<BrowserItem> {
+        val result = mutableListOf<BrowserItem>()
+        fun walk(parent: VaultDirectoryId?) {
+            vault.items(parent).forEach { item ->
+                when (item) {
+                    is VaultItem.Directory -> walk(VaultDirectoryId(item.id.value))
+                    is VaultItem.File -> if (item.isGalleryMedia()) result += browserItem(item)
+                }
+            }
+        }
+        walk(null)
+        return result.sortedBy { it.name.lowercase() }
+    }
+    private fun VaultItem.File.isGalleryMedia(): Boolean {
+        val type = mimeType?.lowercase()
+        if (type?.startsWith("image/") == true || type?.startsWith("video/") == true) return true
+        return displayName.substringAfterLast('.', "").lowercase() in setOf(
+            "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp", "mp4", "m4v", "mov", "webm", "mkv", "avi"
+        )''',
+)
+
+# ---------------------------------------------------------------------------
+# Runtime exposes persisted verified contacts.
+# ---------------------------------------------------------------------------
+runtime = "shared/app/src/commonMain/kotlin/dev/veilshare/app/DefaultSharingRuntime.kt"
+replace_once(
+    runtime,
+    "import dev.veilshare.ui.features.SharingPeerLookupResult",
+    "import dev.veilshare.ui.features.SharingContactSummary\nimport dev.veilshare.ui.features.SharingPeerLookupResult",
+)
+replace_once(
+    runtime,
+    '''    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {''',
+    '''    override suspend fun trustedContacts(): List<SharingContactSummary> = contacts.all().map { contact ->
+        SharingContactSummary(
+            alias = contact.alias,
+            fingerprint = contact.identity.fingerprint.value,
+            referenceCode = contact.lastReferenceCode?.value,
+        )
+    }
+
+    override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {''',
+)
+
+# ---------------------------------------------------------------------------
+# App composition injects optional quick unlock.
+# ---------------------------------------------------------------------------
+app_root = "shared/app/src/commonMain/kotlin/dev/veilshare/app/AppRoot.kt"
+replace_once(
+    app_root,
+    "import dev.veilshare.ui.features.LocalAppController",
+    "import dev.veilshare.ui.features.LocalAppController\nimport dev.veilshare.ui.features.QuickUnlockProvider",
+)
+replace_once(
+    app_root,
+    "import dev.veilshare.ui.features.UnavailableSharingRuntime",
+    "import dev.veilshare.ui.features.UnavailableQuickUnlockProvider\nimport dev.veilshare.ui.features.UnavailableSharingRuntime",
+)
+replace_once(
+    app_root,
+    '''    val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
+    val lockSignals: Flow<Unit> = emptyFlow(),''',
+    '''    val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
+    val quickUnlock: QuickUnlockProvider = UnavailableQuickUnlockProvider,
+    val lockSignals: Flow<Unit> = emptyFlow(),''',
+)
+replace_once(
+    app_root,
+    '''            sharingRuntime = environment.sharingRuntime,
+            scope = scope,''',
+    '''            sharingRuntime = environment.sharingRuntime,
+            scope = scope,
+            quickUnlock = environment.quickUnlock,''',
+)
+
+# ---------------------------------------------------------------------------
+# Existing screen: use new workspace shell, expose legacy Files view internally,
+# add opt-in biometric controls and import-delete confirmation.
+# ---------------------------------------------------------------------------
+foundation = "shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/FoundationScreen.kt"
+replace_once(
+    foundation,
+    "                is RootState.Unlocked -> BrowserScreen(value.browser, controller, windowClass)",
+    "                is RootState.Unlocked -> WorkspaceScreen(value.browser, controller, windowClass)",
+)
+replace_between(
+    foundation,
+    "@Composable private fun UnlockScreen",
+    "@Composable private fun BrowserScreen",
+    '''@Composable private fun UnlockScreen(state: RootState.Locked, controller: LocalAppController) {
+    var credential by remember { mutableStateOf("") }
+    var enrollBiometric by remember { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    fun submit() {
+        if (credential.isNotEmpty() && !state.busy) {
+            controller.unlock(credential.toCharArray(), enrollQuickUnlock = enrollBiometric)
+            credential = ""
+            enrollBiometric = false
+        }
+    }
+    LaunchedEffect(Unit) { withFrameNanos { }; focus.requestFocus() }
+    ElevatedCard(Modifier.widthIn(max = 430.dp)) {
+        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(stringResource(Res.string.files), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(Res.string.continue_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(Res.string.unlock_description))
+            OutlinedTextField(
+                credential, { credential = it }, label = { Text(stringResource(Res.string.code)) }, singleLine = true,
+                enabled = !state.busy, visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus).testTag("unlock_input"),
+                supportingText = { Text(stringResource(Res.string.code_not_stored)) },
+            )
+            if (controller.quickUnlockAvailable) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { enrollBiometric = !enrollBiometric },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = enrollBiometric,
+                        onCheckedChange = { enrollBiometric = it },
+                        enabled = !state.busy,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Activar desbloqueo biométrico después de validar este código")
+                }
+            }
+            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Button(
+                onClick = { submit() }, enabled = !state.busy && credential.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            ) { if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(Res.string.unlock)) }
+            if (controller.quickUnlockAvailable && controller.quickUnlockEnrolled) {
+                OutlinedButton(
+                    onClick = { controller.unlockWithQuickUnlock() },
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) { Text("Usar biometría") }
+            }
+        }
+    }
+}''',
+)
+replace_once(
+    foundation,
+    "@Composable private fun BrowserScreen",
+    "@Composable internal fun BrowserScreen",
+)
+# Turn Add into an explicit confirmation dialog rather than immediate picker.
+replace_once(
+    foundation,
+    '''    var newFolderOpen by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<BrowserItem?>(null) }''',
+    '''    var newFolderOpen by remember { mutableStateOf(false) }
+    var importOptionsOpen by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<BrowserItem?>(null) }''',
+)
+replace_once(
+    foundation,
+    '''        if (newFolderOpen) NameDialog(stringResource(Res.string.new_folder), stringResource(Res.string.create), onDismiss = { newFolderOpen = false }) { controller.createFolder(it); newFolderOpen = false }
+        renameTarget?.let { item -> NameDialog(stringResource(Res.string.rename_title), stringResource(Res.string.save), item.name, onDismiss = { renameTarget = null }) { controller.rename(item.id, it); renameTarget = null } }''',
+    '''        if (newFolderOpen) NameDialog(stringResource(Res.string.new_folder), stringResource(Res.string.create), onDismiss = { newFolderOpen = false }) { controller.createFolder(it); newFolderOpen = false }
+        if (importOptionsOpen) ImportOptionsDialog(
+            onDismiss = { importOptionsOpen = false },
+            onImport = { deleteOriginal ->
+                controller.setDeleteOriginalAfterImport(deleteOriginal)
+                controller.importFile()
+                importOptionsOpen = false
+            },
+        )
+        renameTarget?.let { item -> NameDialog(stringResource(Res.string.rename_title), stringResource(Res.string.save), item.name, onDismiss = { renameTarget = null }) { controller.rename(item.id, it); renameTarget = null } }''',
+)
+replace_once(
+    foundation,
+    '''                        Button(onClick = { controller.importFile() }, enabled = !busy) { Text(stringResource(Res.string.add)) }''',
+    '''                        Button(onClick = { importOptionsOpen = true }, enabled = !busy) { Text(stringResource(Res.string.add)) }''',
+)
+# Add dialog before NameDialog definition.
+replace_once(
+    foundation,
+    '''@Composable private fun NameDialog(''',
+    '''@Composable private fun ImportOptionsDialog(
+    onDismiss: () -> Unit,
+    onImport: (Boolean) -> Unit,
+) {
+    var deleteOriginal by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Agregar archivo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("El archivo se cifra dentro de la bóveda antes de modificar el original.")
+                Row(
+                    Modifier.fillMaxWidth().clickable { deleteOriginal = !deleteOriginal },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(deleteOriginal, { deleteOriginal = it })
+                    Spacer(Modifier.width(8.dp))
+                    Text("Eliminar el original después de cifrar")
+                }
+                if (deleteOriginal) Text(
+                    "Android o el proveedor del documento puede impedir el borrado. La copia cifrada se conservará aunque eso ocurra.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { Button(onClick = { onImport(deleteOriginal) }) { Text("Seleccionar archivo") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.cancel)) } },
+    )
+}
+
+@Composable private fun NameDialog(''',
+)
+
+# ---------------------------------------------------------------------------
+# New responsive workspace navigation.
+# ---------------------------------------------------------------------------
+workspace = r'''package dev.veilshare.ui.features
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import dev.veilshare.ui.design.VeilWindowClass
+
+private enum class WorkspaceSection(val title: String) { Gallery("Galería"), Files("Archivos"), Contacts("Contactos") }
+
+@Composable
+internal fun WorkspaceScreen(browser: BrowserState, controller: LocalAppController, windowClass: VeilWindowClass) {
+    var section by remember { mutableStateOf(WorkspaceSection.Files) }
+    val contacts by controller.contacts.collectAsState()
+    if (windowClass == VeilWindowClass.Compact) {
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    WorkspaceSection.entries.forEach { item ->
+                        NavigationBarItem(
+                            selected = section == item,
+                            onClick = { section = item },
+                            icon = { Icon(sectionIcon(item), item.title) },
+                            label = { Text(item.title) },
+                        )
+                    }
+                }
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) { WorkspaceContent(section, browser, contacts, controller, windowClass) }
+        }
+    } else {
+        Row(Modifier.fillMaxSize()) {
+            NavigationRail {
+                Spacer(Modifier.height(12.dp))
+                WorkspaceSection.entries.forEach { item ->
+                    NavigationRailItem(
+                        selected = section == item,
+                        onClick = { section = item },
+                        icon = { Icon(sectionIcon(item), item.title) },
+                        label = { Text(item.title) },
+                    )
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxHeight()) { WorkspaceContent(section, browser, contacts, controller, windowClass) }
+        }
+    }
+}
+
+@Composable
+private fun sectionIcon(section: WorkspaceSection) = when (section) {
+    WorkspaceSection.Gallery -> Icons.Default.Collections
+    WorkspaceSection.Files -> Icons.Default.Folder
+    WorkspaceSection.Contacts -> Icons.Default.People
+}
+
+@Composable
+private fun WorkspaceContent(
+    section: WorkspaceSection,
+    browser: BrowserState,
+    contacts: List<SharingContactSummary>,
+    controller: LocalAppController,
+    windowClass: VeilWindowClass,
+) {
+    when (section) {
+        WorkspaceSection.Files -> BrowserScreen(browser, controller, windowClass)
+        WorkspaceSection.Gallery -> GalleryScreen(browser.mediaItems, controller)
+        WorkspaceSection.Contacts -> ContactsScreen(contacts, controller)
+    }
+}
+
+@Composable
+private fun GalleryScreen(items: List<BrowserItem>, controller: LocalAppController) {
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Galería", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        Text("Fotos y videos cifrados de toda la bóveda", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (items.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Todavía no hay fotos o videos.") }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(150.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(items, key = { it.id }) { item ->
+                    ElevatedCard(
+                        Modifier.fillMaxWidth().clickable { controller.openFile(item.id) },
+                    ) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Icon(Icons.Default.Collections, contentDescription = null, modifier = Modifier.size(36.dp))
+                            Text(item.name, fontWeight = FontWeight.Medium, maxLines = 2)
+                            item.mime?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContactsScreen(contacts: List<SharingContactSummary>, controller: LocalAppController) {
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Contactos", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                Text("Identidades verificadas manualmente", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            OutlinedButton(onClick = { controller.startSharingReceiver() }) { Text("Recibir") }
+            Button(onClick = { controller.startContactVerification() }) { Text("Agregar") }
+        }
+        if (contacts.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No hay contactos verificados todavía.") }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(contacts, key = { it.fingerprint }) { contact ->
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.People, contentDescription = null)
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(contact.alias, fontWeight = FontWeight.SemiBold)
+                                contact.referenceCode?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                Text(contact.fingerprint.chunked(4).take(4).joinToString(" "), style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(onClick = { controller.startSharingSender() }) { Text("Enviar") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+'''
+write("shared/ui-features/src/commonMain/kotlin/dev/veilshare/ui/features/WorkspaceScreen.kt", workspace)
+
+# ---------------------------------------------------------------------------
+# Android biometric quick unlock: per-use BiometricPrompt + Keystore AES-GCM.
+# ---------------------------------------------------------------------------
+biometric = r'''package dev.veilshare.android
+
+import android.os.Build
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import dev.veilshare.ui.features.QuickUnlockProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+
+internal class AndroidBiometricQuickUnlock(
+    private val activity: FragmentActivity,
+) : QuickUnlockProvider {
+    private val root = File(activity.noBackupFilesDir, "quick-unlock-v1")
+    private val blob = File(root, "credential.bin")
+    private var pending: CharArray? = null
+
+    override val available: Boolean
+        get() = BiometricManager.from(activity).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
+            BiometricManager.BIOMETRIC_SUCCESS
+
+    override val hasCredential: Boolean get() = blob.isFile
+
+    override fun stageEnrollment(credential: CharArray) {
+        discardPendingEnrollment()
+        pending = credential.copyOf()
+    }
+
+    override fun discardPendingEnrollment() {
+        pending?.fill('\u0000')
+        pending = null
+    }
+
+    override suspend fun completePendingEnrollment(): Boolean {
+        val chars = pending ?: return false
+        return try {
+            if (!available) return false
+            val bytes = chars.concatToString().encodeToByteArray()
+            try {
+                val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+                    init(Cipher.ENCRYPT_MODE, secretKey(createIfMissing = true))
+                }
+                val authenticated = authenticate("Activar desbloqueo biométrico", cipher) ?: return false
+                val encrypted = authenticated.doFinal(bytes)
+                val payload = ByteArray(1 + authenticated.iv.size + encrypted.size)
+                payload[0] = authenticated.iv.size.toByte()
+                authenticated.iv.copyInto(payload, 1)
+                encrypted.copyInto(payload, 1 + authenticated.iv.size)
+                atomicWrite(payload)
+                true
+            } finally {
+                bytes.fill(0)
+            }
+        } finally {
+            discardPendingEnrollment()
+        }
+    }
+
+    override suspend fun requestCredential(): CharArray? {
+        if (!available || !blob.isFile) return null
+        val payload = runCatching { blob.readBytes() }.getOrNull() ?: return null
+        if (payload.size < 2) return null
+        val ivSize = payload[0].toInt() and 0xff
+        if (ivSize !in 12..32 || payload.size <= 1 + ivSize) return null
+        val iv = payload.copyOfRange(1, 1 + ivSize)
+        val encrypted = payload.copyOfRange(1 + ivSize, payload.size)
+        return try {
+            val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.DECRYPT_MODE, secretKey(createIfMissing = false), GCMParameterSpec(128, iv))
+            }
+            val authenticated = authenticate("Desbloquear archivos", cipher) ?: return null
+            val clear = authenticated.doFinal(encrypted)
+            try { clear.decodeToString().toCharArray() } finally { clear.fill(0) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override fun clearCredential() {
+        discardPendingEnrollment()
+        blob.delete()
+        runCatching {
+            val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            store.deleteEntry(KEY_ALIAS)
+        }
+    }
+
+    private fun secretKey(createIfMissing: Boolean): SecretKey {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (store.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        check(createIfMissing) { "Quick unlock key is missing" }
+        val generator = KeyGenerator.getInstance("AES", "AndroidKeyStore")
+        val builder = android.security.keystore.KeyGenParameterSpec.Builder(
+            KEY_ALIAS,
+            android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT,
+        )
+            .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .setUserAuthenticationRequired(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) builder.setInvalidatedByBiometricEnrollment(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.setUserAuthenticationParameters(0, android.security.keystore.KeyProperties.AUTH_BIOMETRIC_STRONG)
+        } else {
+            @Suppress("DEPRECATION")
+            builder.setUserAuthenticationValidityDurationSeconds(-1)
+        }
+        generator.init(builder.build())
+        return generator.generateKey()
+    }
+
+    private suspend fun authenticate(title: String, cipher: Cipher): Cipher? = suspendCancellableCoroutine { continuation ->
+        val executor = ContextCompat.getMainExecutor(activity)
+        val prompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                if (continuation.isActive) continuation.resume(result.cryptoObject?.cipher)
+            }
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                if (continuation.isActive) continuation.resume(null)
+            }
+        })
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(title)
+            .setSubtitle("VeilShare")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .setNegativeButtonText("Usar código")
+            .build()
+        prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
+        continuation.invokeOnCancellation { prompt.cancelAuthentication() }
+    }
+
+    private fun atomicWrite(bytes: ByteArray) {
+        check(root.mkdirs() || root.isDirectory)
+        val temp = File(root, "credential.tmp")
+        FileOutputStream(temp).use { output ->
+            output.write(bytes)
+            output.fd.sync()
+        }
+        if (blob.exists() && !blob.delete()) error("Unable to replace quick unlock blob")
+        if (!temp.renameTo(blob)) {
+            temp.delete()
+            error("Unable to commit quick unlock blob")
+        }
+    }
+
+    private companion object {
+        const val KEY_ALIAS = "veilshare.quick.unlock.v1"
+        const val TRANSFORMATION = "AES/GCM/NoPadding"
+    }
+}
+'''
+write("androidApp/src/main/kotlin/dev/veilshare/android/AndroidBiometricQuickUnlock.kt", biometric)
+
+# ---------------------------------------------------------------------------
+# Android: FragmentActivity, quick unlock, post-commit provider deletion.
+# ---------------------------------------------------------------------------
+main = "androidApp/src/main/kotlin/dev/veilshare/android/MainActivity.kt"
+replace_once(main, "import android.provider.OpenableColumns", "import android.provider.DocumentsContract\nimport android.provider.OpenableColumns")
+replace_once(main, "import androidx.core.content.FileProvider", "import androidx.core.content.FileProvider\nimport androidx.fragment.app.FragmentActivity")
+replace_once(main, "class MainActivity : ComponentActivity() {", "class MainActivity : FragmentActivity() {")
+replace_once(
+    main,
+    '''            sharingRuntime = sharingRuntime,
+            lockSignals = lockSignals,''',
+    '''            sharingRuntime = sharingRuntime,
+            quickUnlock = AndroidBiometricQuickUnlock(this),
+            lockSignals = lockSignals,''',
+)
+replace_once(
+    main,
+    '''    private val externalUris = ArrayDeque<Uri>()
+    var inFlight: Boolean = false; private set''',
+    '''    private val externalUris = ArrayDeque<Uri>()
+    private var deleteOriginalAfterNextImport = false
+    var inFlight: Boolean = false; private set''',
+)
+replace_once(
+    main,
+    '''    override suspend fun pick(): ImportSource? {
+        val uri = if (externalUris.isEmpty()) pickUri() else externalUris.removeFirst()
+        return uri?.let { AndroidUriImportSource(resolver, it) }
+    }''',
+    '''    override fun setDeleteOriginalAfterImport(enabled: Boolean) {
+        deleteOriginalAfterNextImport = enabled
+    }
+
+    override suspend fun pick(): ImportSource? {
+        val deleteOriginal = deleteOriginalAfterNextImport
+        deleteOriginalAfterNextImport = false
+        val uri = if (externalUris.isEmpty()) pickUri() else externalUris.removeFirst()
+        return uri?.let { AndroidUriImportSource(resolver, it, deleteOriginal) }
+    }''',
+)
+replace_once(
+    main,
+    '''internal class AndroidUriImportSource(private val resolver: ContentResolver, private val uri: Uri) : ImportSource {
+    private val metadata by lazy { resolver.queryMetadata(uri) }
+    override val displayName: String get() = metadata.first ?: "archivo"
+    override val mimeHint: String? get() = resolver.getType(uri)
+    override val sizeHint: Long? get() = metadata.second''',
+    '''internal class AndroidUriImportSource(
+    private val resolver: ContentResolver,
+    private val uri: Uri,
+    override val deleteOriginalRequested: Boolean = false,
+) : ImportSource {
+    private val metadata by lazy { resolver.queryMetadata(uri) }
+    private var deleted = false
+    override val displayName: String get() = metadata.first ?: "archivo"
+    override val mimeHint: String? get() = resolver.getType(uri)
+    override val sizeHint: Long? get() = metadata.second
+    override val originalDeleted: Boolean get() = deleted
+
+    override suspend fun deleteOriginalAfterCommit(): Boolean = withContext(Dispatchers.IO) {
+        if (!deleteOriginalRequested || deleted) return@withContext deleted
+        deleted = runCatching {
+            if (DocumentsContract.isDocumentUri(null, uri)) {
+                DocumentsContract.deleteDocument(resolver, uri)
+            } else {
+                resolver.delete(uri, null, null) > 0
+            }
+        }.getOrDefault(false)
+        deleted
+    }''',
+)
+
+manifest = "androidApp/src/main/AndroidManifest.xml"
+replace_once(
+    manifest,
+    '''    <uses-permission android:name="android.permission.INTERNET" />''',
+    '''    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />''',
+)
+replace_once(
+    manifest,
+    '''        <activity android:name=".MainActivity" android:exported="true">''',
+    '''        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">''',
+)
+
+android_gradle = "androidApp/build.gradle.kts"
+replace_once(
+    android_gradle,
+    '''    implementation(libs.androidx.core.ktx)''',
+    '''    implementation(libs.androidx.core.ktx)
+    implementation("androidx.biometric:biometric:1.1.0")''',
+)
+
+# ---------------------------------------------------------------------------
+# Ordering regression: source deletion can only happen after durable catalog.
+# ---------------------------------------------------------------------------
+ordering_test = r'''package dev.veilshare.core.vault
+
+import dev.veilshare.core.crypto.*
+import kotlinx.coroutines.test.runTest
+import java.nio.file.Files
+import kotlin.test.*
+
+class ImportDeleteOriginalOrderingTest {
+    @Test fun `requested original deletion occurs only after encrypted catalog is durable`() = runTest {
+        val root = Files.createTempDirectory("veil-delete-order-")
+        val events = mutableListOf<String>()
+        val crypto = DesktopProductionCrypto.create()
+        val policy = Argon2Policy(Argon2Parameters(8192, 1, 1))
+        val wrapper = OrderingWrapper(crypto.cipher)
+        CreateVaultSetUseCase(
+            DesktopVaultSlotStore(root), crypto.random, crypto.passwordKdf, wrapper, crypto.cipher, policy,
+            DesktopVaultCatalogBootstrap(root, DesktopProductionCrypto.keyDeriver(), crypto.cipher),
+        ).create(SensitiveChars("111111".toCharArray()), SensitiveChars("222222".toCharArray()))
+        val opened = assertIs<DesktopOpenResult.Ready>(
+            DesktopVaultRepository(
+                root,
+                UnlockVaultUseCase(DesktopVaultSlotStore(root), crypto.passwordKdf, wrapper, crypto.cipher, policy),
+                DesktopProductionCrypto.keyDeriver(), crypto.cipher,
+            ).open(SensitiveChars("111111".toCharArray())),
+        )
+        val source = OrderingSource("payload".encodeToByteArray()) { events += "delete" }
+        val coordinator = ImportCoordinator(
+            crypto.random,
+            crypto.cipher,
+            DesktopBlobStore(root.resolve("blobs"), opened.session.descriptor.blobNamespace),
+            DesktopEncryptedCatalogStore(
+                root, opened.session.descriptor.vaultId,
+                CatalogCrypto(DesktopProductionCrypto.keyDeriver(), crypto.cipher),
+            ),
+            DesktopVaultJournal(root),
+            FileKeyWrapping(DesktopProductionCrypto.keyDeriver(), crypto.cipher),
+        ) { point -> if (point == ImportFaultPoint.CatalogDurable) events += "catalog-durable" }
+        coordinator.import(opened.session, opened.catalog, source) { progress ->
+            if (progress is ImportProgress.Complete) events += "complete"
+        }
+        assertEquals(listOf("catalog-durable", "delete", "complete"), events)
+        assertTrue(source.originalDeleted)
+        opened.session.close()
+    }
+}
+
+private class OrderingSource(
+    private val bytes: ByteArray,
+    private val onDelete: () -> Unit,
+) : ImportSource {
+    override val displayName = "source.bin"
+    override val mimeHint = "application/octet-stream"
+    override val sizeHint = bytes.size.toLong()
+    override val deleteOriginalRequested = true
+    private var deleted = false
+    override val originalDeleted get() = deleted
+    override suspend fun deleteOriginalAfterCommit(): Boolean {
+        onDelete()
+        deleted = true
+        return true
+    }
+    override suspend fun openRead() = object : ImportReadHandle {
+        private var done = false
+        override suspend fun read(maxBytes: Int): ByteArray = if (done) ByteArray(0) else bytes.also { done = true }
+        override suspend fun close() = Unit
+    }
+}
+
+private class OrderingWrapper(private val cipher: AuthenticatedCipher) : KeyWrapper {
+    override suspend fun wrap(kek: KeyEncryptionKey, vaultKey: VaultKey, aad: ByteArray) =
+        cipher.seal(kek.material, vaultKey.material.copy(), aad)
+    override suspend fun unwrap(kek: KeyEncryptionKey, wrapped: SealedBytes, aad: ByteArray) =
+        VaultKey(SensitiveBytes(cipher.open(kek.material, wrapped, aad)))
+}
+'''
+write("shared/core-vault/src/desktopTest/kotlin/dev/veilshare/core/vault/ImportDeleteOriginalOrderingTest.kt", ordering_test)
+
+# ---------------------------------------------------------------------------
+# Controller regression: failed initial activation must recover without relock.
+# ---------------------------------------------------------------------------
+controller_test = "shared/ui-features/src/commonTest/kotlin/dev/veilshare/ui/features/LocalAppControllerTest.kt"
+replace_once(
+    controller_test,
+    '''    @Test fun senderCompletesThenDoneReturnsToBrowserAndRuntimeOwnsFileExactlyOnce() = runTest {''',
+    '''    @Test fun senderRecoversWhenInitialSharingActivationFailedWithoutRelock() = runTest {
+        val runtime = RecordingSharingRuntime(
+            activationSequence = mutableListOf(
+                SharingRuntimeActivation.Unavailable("offline"),
+                SharingRuntimeActivation.Ready(TEST_REFERENCE),
+            ),
+        )
+        val picked = BytesSharingFile("recover.txt", "payload".encodeToByteArray())
+        val controller = controller(
+            FakeService(LocalStorageState.READY),
+            runtime,
+            object : SharingFilePicker { override suspend fun pickFile(): SharingPickedFile = picked },
+        )
+        controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
+        assertIs<RootState.Unlocked>(controller.state.value)
+        controller.startSharingSender(); controller.selectSharingFile(); advanceUntilIdle()
+        controller.enterSharingReferenceCode(TEST_REFERENCE.value)
+        controller.startSharingTransfer(); advanceUntilIdle()
+        assertIs<SharingSenderState.Completed>(assertIs<RootState.SharingSender>(controller.state.value).state)
+        assertEquals(2, runtime.activateCalls)
+        assertEquals(1, runtime.sendCalls)
+    }
+
+    @Test fun senderCompletesThenDoneReturnsToBrowserAndRuntimeOwnsFileExactlyOnce() = runTest {''',
+)
+replace_once(
+    controller_test,
+    '''private class RecordingSharingRuntime(
+    private val activation: SharingRuntimeActivation = SharingRuntimeActivation.Ready(TEST_REFERENCE),''',
+    '''private class RecordingSharingRuntime(
+    private val activation: SharingRuntimeActivation = SharingRuntimeActivation.Ready(TEST_REFERENCE),
+    private val activationSequence: MutableList<SharingRuntimeActivation>? = null,''',
+)
+replace_once(
+    controller_test,
+    '''    override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation {
+        activateCalls++
+        return activation
+    }''',
+    '''    override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation {
+        activateCalls++
+        return activationSequence?.removeFirstOrNull() ?: activation
+    }''',
+)
+
+# ---------------------------------------------------------------------------
+# Validation matrix lives beside the implementation, not only in chat.
+# ---------------------------------------------------------------------------
+validation = r'''# Android UX Overhaul — objective validation
+
+This batch is considered complete only when the listed automated gates pass.
+
+| Objective | Implementation boundary | Automated validation |
+|---|---|---|
+| Sharing self-recovery | `LocalAppController.ensureSharingPresence()` re-activates the unlocked persona if initial activation failed | `senderRecoversWhenInitialSharingActivationFailedWithoutRelock` + `:shared:ui-features:desktopTest` |
+| Android Share target | `ACTION_SEND`, singleTop intake, queued SAF URI | Android `assembleReleaseCheck` |
+| Delete original safely | `ImportSource.deleteOriginalAfterCommit()` runs after blob/catalog/journal durability; provider failure cannot invalidate import | `ImportDeleteOriginalOrderingTest` + `:shared:core-vault:desktopTest` |
+| Gallery / Files / Contacts | adaptive bottom navigation / rail, recursive media index, persisted trusted-contact list | `:shared:ui-features:desktopTest` + Android compile |
+| Biometric quick unlock | explicit opt-in, Android BiometricPrompt CryptoObject, auth-per-use Keystore AES-GCM, PIN fallback | Android `assembleReleaseCheck`; final interaction still requires physical-device smoke |
+| System bars | `safeDrawingPadding()` root | Android compile / beta APK |
+| Production signaling | beta APK embeds Railway `wss://veilshare-signaling-production.up.railway.app/v1/ws` | beta workflow + Railway deployment status |
+
+## Security invariants
+
+- The PIN path remains authoritative and is never removed.
+- Biometric storage contains only an authenticated-encrypted credential blob protected by an Android Keystore key requiring biometric authentication per use.
+- REAL/DECOY labels are not persisted in quick-unlock metadata.
+- Delete-original is explicit and one-shot; it is attempted only after the encrypted import is durable.
+- Failure to delete the provider document never rolls back a completed encrypted import.
+- Reference codes remain routing data, not trust evidence; Contacts lists only explicitly pinned identities.
+- A failed relay connection no longer forces the user to lock/unlock the vault to retry.
+'''
+write("docs/ANDROID_UX_OVERHAUL_VALIDATION.md", validation)
+
+print("Android UX overhaul batch applied")
