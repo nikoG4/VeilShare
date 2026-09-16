@@ -7,6 +7,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -119,8 +120,10 @@ private fun Intent.sharedStreamUri(): Uri? =
 internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePicker, SharingFilePicker {
     private var continuation: Continuation<Uri?>? = null
     private val externalUris = ArrayDeque<Uri>()
-    var inFlight: Boolean = false; private set
+    private val context = activity.applicationContext
     private val resolver = activity.contentResolver
+    private var deleteOriginalAfterNextImport = false
+    var inFlight: Boolean = false; private set
     private val launcher = activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         inFlight = false; continuation?.resume(uri); continuation = null
     }
@@ -129,9 +132,15 @@ internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePic
         externalUris.addLast(uri)
     }
 
+    override fun setDeleteOriginalAfterImport(enabled: Boolean) {
+        deleteOriginalAfterNextImport = enabled
+    }
+
     override suspend fun pick(): ImportSource? {
+        val deleteOriginal = deleteOriginalAfterNextImport
+        deleteOriginalAfterNextImport = false
         val uri = if (externalUris.isEmpty()) pickUri() else externalUris.removeFirst()
-        return uri?.let { AndroidUriImportSource(resolver, it) }
+        return uri?.let { AndroidUriImportSource(context, resolver, it, deleteOriginal) }
     }
 
     override suspend fun pickFile(): SharingPickedFile? = pickUri()?.let { AndroidUriSharingFile(resolver, it) }
@@ -145,11 +154,28 @@ internal class AndroidDocumentPicker(activity: ComponentActivity) : LocalFilePic
     }
 }
 
-internal class AndroidUriImportSource(private val resolver: ContentResolver, private val uri: Uri) : ImportSource {
+internal class AndroidUriImportSource(
+    private val context: Context,
+    private val resolver: ContentResolver,
+    private val uri: Uri,
+    override val deleteOriginalRequested: Boolean = false,
+) : ImportSource {
     private val metadata by lazy { resolver.queryMetadata(uri) }
     override val displayName: String get() = metadata.first ?: "archivo"
     override val mimeHint: String? get() = resolver.getType(uri)
     override val sizeHint: Long? get() = metadata.second
+
+    override suspend fun deleteOriginalAfterCommit(): Boolean = withContext(Dispatchers.IO) {
+        if (!deleteOriginalRequested) return@withContext false
+        runCatching {
+            if (DocumentsContract.isDocumentUri(context, uri)) {
+                DocumentsContract.deleteDocument(resolver, uri) || resolver.delete(uri, null, null) > 0
+            } else {
+                resolver.delete(uri, null, null) > 0
+            }
+        }.getOrDefault(false)
+    }
+
     override suspend fun openRead(): ImportReadHandle {
         val stream = resolver.openInputStream(uri) ?: error("Source unavailable")
         return object : ImportReadHandle {
