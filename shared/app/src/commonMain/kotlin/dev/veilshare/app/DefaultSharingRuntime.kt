@@ -536,7 +536,9 @@ class DefaultSharingRuntime(
     private suspend fun routeRelay(sessionId: SessionId, envelope: SignalingEnvelope) {
         val alreadyClaimed = stateMutex.withLock { sessionInboxes[sessionId.value] }
         if (alreadyClaimed != null) {
-            alreadyClaimed.trySend(envelope)
+            // A claimed session is the data plane. Applying backpressure here is intentional:
+            // trySend() could silently discard fragment 65+ when the bounded inbox fills.
+            alreadyClaimed.send(envelope)
             return
         }
 
@@ -558,7 +560,9 @@ class DefaultSharingRuntime(
             }
             null
         }
-        channel?.trySend(envelope)
+        // A channel can be claimed between the first lookup and handshake classification.
+        // Suspend instead of dropping if its bounded buffer is temporarily full.
+        channel?.send(envelope)
     }
 
     private suspend fun claimSessionInbox(sessionId: SessionId): Channel<SignalingEnvelope> {
@@ -567,7 +571,7 @@ class DefaultSharingRuntime(
             check(sessionInboxes.put(sessionId.value, channel) == null) { "Session inbox already claimed" }
             earlyRelays.remove(sessionId.value)?.toList().orEmpty()
         }
-        pending.forEach { channel.trySend(it) }
+        pending.forEach { channel.send(it) }
         return channel
     }
 
