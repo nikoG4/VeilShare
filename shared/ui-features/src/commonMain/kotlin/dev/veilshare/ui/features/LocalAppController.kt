@@ -476,23 +476,47 @@ class LocalAppController(
     fun startSharingReceiver() {
         if (mutableState.value !is RootState.Unlocked) return
         if (sharingJob?.isActive == true) return
+
+        // If activation during unlock already produced a reference code, move into the
+        // receiver state synchronously so a fast incoming OFFER cannot race with refresh.
+        ownSharingReferenceCode?.let { referenceCode ->
+            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
+        }
+
         sharingJob = scope.launch {
             try {
                 when (val presence = withContext(workDispatcher) { ensureSharingPresence() }) {
                     is SharingRuntimeActivation.Ready -> {
                         ownSharingReferenceCode = presence.referenceCode
-                        mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(presence.referenceCode))
+                        val current = mutableState.value
+                        if (current is RootState.Unlocked ||
+                            (current is RootState.SharingReceiver && current.state is SharingReceiverState.Waiting)
+                        ) {
+                            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(presence.referenceCode))
+                        }
                     }
-                    is SharingRuntimeActivation.Unavailable -> mutableState.value = RootState.SharingReceiver(
-                        SharingReceiverState.Error(presence.reason ?: "No se pudo restablecer el canal de compartir."),
-                    )
+                    is SharingRuntimeActivation.Unavailable -> {
+                        val current = mutableState.value
+                        if (current is RootState.Unlocked ||
+                            (current is RootState.SharingReceiver && current.state is SharingReceiverState.Waiting)
+                        ) {
+                            mutableState.value = RootState.SharingReceiver(
+                                SharingReceiverState.Error(presence.reason ?: "No se pudo restablecer el canal de compartir."),
+                            )
+                        }
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                mutableState.value = RootState.SharingReceiver(
-                    SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),
-                )
+                val current = mutableState.value
+                if (current is RootState.Unlocked ||
+                    (current is RootState.SharingReceiver && current.state is SharingReceiverState.Waiting)
+                ) {
+                    mutableState.value = RootState.SharingReceiver(
+                        SharingReceiverState.Error("No se pudo restablecer el canal de compartir."),
+                    )
+                }
             } finally {
                 sharingJob = null
             }
