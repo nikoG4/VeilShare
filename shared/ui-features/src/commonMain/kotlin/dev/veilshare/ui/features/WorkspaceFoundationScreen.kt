@@ -62,11 +62,6 @@ private enum class WorkspaceSection(val title: String, val glyph: String) {
     Contacts("Contactos", "◎"),
 }
 
-/**
- * Keeps the established locked/setup/sharing flows untouched while giving the unlocked
- * vault a responsive workspace. This lets the UX evolve without duplicating trust or
- * cryptographic state in Compose.
- */
 @Composable
 fun WorkspaceFoundationScreen(
     controller: LocalAppController,
@@ -342,6 +337,12 @@ private fun WorkspaceFileRow(
             Box {
                 TextButton(onClick = { menuOpen = true }) { Text("Más") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (!item.isDirectory) {
+                        DropdownMenuItem(
+                            text = { Text("Compartir") },
+                            onClick = { menuOpen = false; controller.shareVaultItem(item.id) },
+                        )
+                    }
                     DropdownMenuItem(text = { Text("Renombrar") }, onClick = { menuOpen = false; rename() })
                     DropdownMenuItem(text = { Text("Eliminar") }, onClick = { menuOpen = false; delete() })
                 }
