@@ -1,26 +1,19 @@
 package dev.veilshare.app
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Modifier
 import dev.veilshare.core.vault.LocalVaultService
-import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
+import dev.veilshare.ui.features.AppUiHost
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
-import dev.veilshare.ui.features.LocalReferenceCodeQrProvider
 import dev.veilshare.ui.features.MediaPreviewProvider
 import dev.veilshare.ui.features.QuickUnlockProvider
-import dev.veilshare.ui.features.QuickUnlockScreen
-import dev.veilshare.ui.features.ReceiverCodeActionsOverlay
 import dev.veilshare.ui.features.ReferenceCodeQrProvider
 import dev.veilshare.ui.features.RootState
 import dev.veilshare.ui.features.SharingFilePicker
@@ -31,8 +24,6 @@ import dev.veilshare.ui.features.UnavailableQuickUnlockProvider
 import dev.veilshare.ui.features.UnavailableReferenceCodeQrProvider
 import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
-import dev.veilshare.ui.features.VaultPhotoViewerOverlay
-import dev.veilshare.ui.features.WorkspaceFoundationScreen
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
@@ -91,16 +82,12 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
             environment.mediaPreview.clear()
         }
     }
-    VeilTheme {
-        CompositionLocalProvider(LocalReferenceCodeQrProvider provides environment.referenceQr) {
-            Box(Modifier.fillMaxSize()) {
-                when (val value = root) {
-                    is RootState.Locked -> QuickUnlockScreen(value, controller)
-                    else -> WorkspaceFoundationScreen(controller, windowClass, environment.mediaPreview)
-                }
-                VaultPhotoViewerOverlay(controller, environment.mediaPreview)
-                ReceiverCodeActionsOverlay(root)
-            }
-        }
-    }
+
+    AppUiHost(
+        root = root,
+        controller = controller,
+        windowClass = windowClass,
+        mediaPreview = environment.mediaPreview,
+        referenceQr = environment.referenceQr,
+    )
 }
