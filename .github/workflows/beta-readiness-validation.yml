@@ -47,7 +47,10 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
-      - run: ./gradlew :server:signaling:test :server:signaling:distZip --no-daemon --stacktrace
+      - name: Test signaling including production wire compatibility
+        env:
+          VEILSHARE_PRODUCTION_SIGNALING_URL: wss://veilshare-signaling-production.up.railway.app/v1/ws
+        run: ./gradlew :server:signaling:test :server:signaling:distZip --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         if: success()
         with:
