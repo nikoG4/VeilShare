@@ -99,7 +99,11 @@ data class SharingProgress(
     val totalChunks: Int,
 )
 
-interface LocalFilePicker { suspend fun pick(): ImportSource? }
+interface LocalFilePicker {
+    suspend fun pick(): ImportSource?
+    /** Applies only to the next interactive import. Unsupported platforms may ignore it. */
+    fun setDeleteOriginalAfterImport(enabled: Boolean) = Unit
+}
 interface VaultFileOpener { suspend fun open(vault: VaultHandle, file: VaultItem.File); fun cleanup() = Unit }
 
 /**
