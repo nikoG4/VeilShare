@@ -8,7 +8,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import dev.veilshare.core.vault.LocalVaultService
 import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
-import dev.veilshare.ui.features.FoundationScreen
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.RootState
@@ -17,6 +16,7 @@ import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingRuntime
 import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
+import dev.veilshare.ui.features.WorkspaceFoundationScreen
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
@@ -59,5 +59,5 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         }
     }
     DisposableEffect(controller) { onDispose { controller.close() } }
-    VeilTheme { FoundationScreen(controller, windowClass) }
+    VeilTheme { WorkspaceFoundationScreen(controller, windowClass) }
 }
