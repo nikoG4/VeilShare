@@ -1,5 +1,6 @@
 package dev.veilshare.ui.features
 
+import androidx.compose.ui.graphics.ImageBitmap
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.vault.ImportSource
@@ -105,6 +106,20 @@ interface LocalFilePicker {
     fun setDeleteOriginalAfterImport(enabled: Boolean) = Unit
 }
 interface VaultFileOpener { suspend fun open(vault: VaultHandle, file: VaultItem.File); fun cleanup() = Unit }
+
+/**
+ * Platform media decoder bound to the currently unlocked vault.
+ * Implementations must not persist decrypted preview bytes outside process memory.
+ */
+interface MediaPreviewProvider {
+    suspend fun load(itemId: String, maxDimensionPx: Int = 512): ImageBitmap?
+    fun clear()
+}
+
+object UnavailableMediaPreviewProvider : MediaPreviewProvider {
+    override suspend fun load(itemId: String, maxDimensionPx: Int): ImageBitmap? = null
+    override fun clear() = Unit
+}
 
 /** Optional platform boundary for a protected credential shortcut. PIN unlock remains authoritative. */
 interface QuickUnlockProvider {
