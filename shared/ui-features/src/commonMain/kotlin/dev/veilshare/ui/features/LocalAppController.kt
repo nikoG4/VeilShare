@@ -38,6 +38,7 @@ class LocalAppController(
     private var receiverPresenceJob: Job? = null
     private var sharingEventsJob: Job? = null
     private var selectedSharingFile: SharingPickedFile? = null
+    private var pendingVaultShareItemId: String? = null
     private var ownSharingReferenceCode: dev.veilshare.core.model.ReferenceCode? = null
     private var deleteOriginalAfterImport = false
 
@@ -210,6 +211,7 @@ class LocalAppController(
         val vault = active ?: return
         val file = vault.find(VaultItemId(id)) as? VaultItem.File ?: return
         val previous = selectedSharingFile
+        pendingVaultShareItemId = id
         selectedSharingFile = VaultSharingPickedFile(vault, file)
         mutableViewerItem.value = null
         if (previous != null) {
@@ -247,6 +249,7 @@ class LocalAppController(
         sharingJob?.cancel(); sharingJob = null
         receiverPresenceJob?.cancel(); receiverPresenceJob = null
         closeSelectedSharingFileAsync()
+        pendingVaultShareItemId = null
         ownSharingReferenceCode = null
         activePersonaId = null
         deleteOriginalAfterImport = false
@@ -274,7 +277,8 @@ class LocalAppController(
 
     fun startSharingSender() {
         if (mutableState.value !is RootState.Unlocked) return
-        mutableState.value = RootState.SharingSender(SharingSenderState.Preparing())
+        val restoredName = restorePendingVaultSharingFile()
+        mutableState.value = RootState.SharingSender(SharingSenderState.Preparing(selectedFile = restoredName))
     }
 
     fun selectSharingFile() {
@@ -287,6 +291,7 @@ class LocalAppController(
                 return@launch
             }
             val previous = selectedSharingFile
+            pendingVaultShareItemId = null
             selectedSharingFile = result
             if (previous != null) withContext(NonCancellable + workDispatcher) { previous.close() }
             mutableState.value = RootState.SharingSender(current.copy(selectedFile = result.displayName))
@@ -330,7 +335,10 @@ class LocalAppController(
                     }
                 }
                 mutableState.value = when (result) {
-                    SharingSendResult.Completed -> RootState.SharingSender(SharingSenderState.Completed)
+                    SharingSendResult.Completed -> {
+                        pendingVaultShareItemId = null
+                        RootState.SharingSender(SharingSenderState.Completed)
+                    }
                     is SharingSendResult.NeedsVerification -> RootState.SharingSender(
                         SharingSenderState.VerificationRequired(
                             referenceCode = referenceCode,
@@ -376,8 +384,12 @@ class LocalAppController(
             try {
                 when (val result = withContext(workDispatcher) { sharingRuntime.confirmPendingPeer(safeAlias) }) {
                     SharingVerificationResult.Verified -> {
+                        val restoredName = restorePendingVaultSharingFile()
                         mutableState.value = RootState.SharingSender(
-                            SharingSenderState.Preparing(referenceCode = verification.referenceCode.value),
+                            SharingSenderState.Preparing(
+                                referenceCode = verification.referenceCode.value,
+                                selectedFile = restoredName,
+                            ),
                         )
                         refreshContactsAsync()
                     }
@@ -401,8 +413,12 @@ class LocalAppController(
         val verification = (mutableState.value as? RootState.SharingSender)?.state as? SharingSenderState.VerificationRequired ?: return
         if (verification.busy) return
         scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
+        val restoredName = restorePendingVaultSharingFile()
         mutableState.value = RootState.SharingSender(
-            SharingSenderState.Preparing(referenceCode = verification.referenceCode.value),
+            SharingSenderState.Preparing(
+                referenceCode = verification.referenceCode.value,
+                selectedFile = restoredName,
+            ),
         )
     }
 
@@ -540,6 +556,7 @@ class LocalAppController(
         sharingJob?.cancel(); sharingJob = null
         receiverPresenceJob?.cancel(); receiverPresenceJob = null
         closeSelectedSharingFileAsync()
+        pendingVaultShareItemId = null
         scope.launch {
             withContext(NonCancellable + workDispatcher) {
                 runCatching { sharingRuntime.dismissPendingPeerVerification() }
@@ -557,6 +574,7 @@ class LocalAppController(
     fun finishSharing() {
         receiverPresenceJob?.cancel(); receiverPresenceJob = null
         closeSelectedSharingFileAsync()
+        pendingVaultShareItemId = null
         scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
         returnToBrowser()
     }
@@ -677,6 +695,14 @@ class LocalAppController(
                 emptyList()
             }
         }
+    }
+
+    private fun restorePendingVaultSharingFile(): String? {
+        val id = pendingVaultShareItemId ?: return null
+        val vault = active ?: return null
+        val file = vault.find(VaultItemId(id)) as? VaultItem.File ?: return null
+        selectedSharingFile = VaultSharingPickedFile(vault, file)
+        return file.displayName
     }
 
     private fun closeSelectedSharingFileAsync() {
