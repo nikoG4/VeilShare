@@ -26,10 +26,10 @@ data class BrowserState(
     val currentFolderId: String? = null,
     val breadcrumbs: List<Breadcrumb> = listOf(Breadcrumb(null, "Archivos")),
     val items: List<BrowserItem> = emptyList(),
-    /** All image/video files in this vault, recursively indexed for the Gallery tab. */
-    val mediaItems: List<BrowserItem> = emptyList(),
     val operation: BrowserOperation = BrowserOperation.Idle,
     val message: String? = null,
+    /** All image/video files in this vault, recursively indexed for the Gallery tab. */
+    val mediaItems: List<BrowserItem> = emptyList(),
 )
 
 enum class SharingVerificationReason { NEW_PEER, IDENTITY_CHANGED }
