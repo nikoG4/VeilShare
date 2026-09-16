@@ -1,6 +1,7 @@
 package dev.veilshare.app
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -12,6 +13,7 @@ import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
+import dev.veilshare.ui.features.LocalReferenceCodeQrProvider
 import dev.veilshare.ui.features.MediaPreviewProvider
 import dev.veilshare.ui.features.QuickUnlockProvider
 import dev.veilshare.ui.features.QuickUnlockScreen
@@ -85,9 +87,11 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         }
     }
     VeilTheme {
-        when (val value = root) {
-            is RootState.Locked -> QuickUnlockScreen(value, controller)
-            else -> WorkspaceFoundationScreen(controller, windowClass, environment.mediaPreview, environment.referenceQr)
+        CompositionLocalProvider(LocalReferenceCodeQrProvider provides environment.referenceQr) {
+            when (val value = root) {
+                is RootState.Locked -> QuickUnlockScreen(value, controller)
+                else -> WorkspaceFoundationScreen(controller, windowClass, environment.mediaPreview)
+            }
         }
     }
 }
