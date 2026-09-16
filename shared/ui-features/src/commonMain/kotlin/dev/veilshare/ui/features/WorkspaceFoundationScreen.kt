@@ -1,5 +1,6 @@
 package dev.veilshare.ui.features
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,10 +45,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.veilshare.ui.design.VeilWindowClass
@@ -64,14 +68,18 @@ private enum class WorkspaceSection(val title: String, val glyph: String) {
  * cryptographic state in Compose.
  */
 @Composable
-fun WorkspaceFoundationScreen(controller: LocalAppController, windowClass: VeilWindowClass) {
+fun WorkspaceFoundationScreen(
+    controller: LocalAppController,
+    windowClass: VeilWindowClass,
+    mediaPreview: MediaPreviewProvider = UnavailableMediaPreviewProvider,
+) {
     val root by controller.state.collectAsState()
     val unlocked = root as? RootState.Unlocked
     if (unlocked == null) {
         FoundationScreen(controller, windowClass)
         return
     }
-    WorkspaceScreen(unlocked.browser, controller, windowClass)
+    WorkspaceScreen(unlocked.browser, controller, windowClass, mediaPreview)
 }
 
 @Composable
@@ -79,6 +87,7 @@ private fun WorkspaceScreen(
     browser: BrowserState,
     controller: LocalAppController,
     windowClass: VeilWindowClass,
+    mediaPreview: MediaPreviewProvider,
 ) {
     var section by remember { mutableStateOf(WorkspaceSection.Files) }
     val contacts by controller.contacts.collectAsState()
@@ -104,6 +113,7 @@ private fun WorkspaceScreen(
                 contacts = contacts,
                 controller = controller,
                 windowClass = windowClass,
+                mediaPreview = mediaPreview,
                 modifier = Modifier.fillMaxSize().padding(padding),
             )
         }
@@ -126,6 +136,7 @@ private fun WorkspaceScreen(
                 contacts = contacts,
                 controller = controller,
                 windowClass = windowClass,
+                mediaPreview = mediaPreview,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
         }
@@ -139,12 +150,13 @@ private fun WorkspaceContent(
     contacts: List<SharingContactSummary>,
     controller: LocalAppController,
     windowClass: VeilWindowClass,
+    mediaPreview: MediaPreviewProvider,
     modifier: Modifier,
 ) {
     Box(modifier) {
         when (section) {
             WorkspaceSection.Files -> WorkspaceFiles(browser, controller, windowClass)
-            WorkspaceSection.Gallery -> GalleryScreen(browser.mediaItems, controller)
+            WorkspaceSection.Gallery -> GalleryScreen(browser.mediaItems, controller, mediaPreview)
             WorkspaceSection.Contacts -> ContactsScreen(contacts, controller)
         }
     }
@@ -339,7 +351,11 @@ private fun WorkspaceFileRow(
 }
 
 @Composable
-private fun GalleryScreen(items: List<BrowserItem>, controller: LocalAppController) {
+private fun GalleryScreen(
+    items: List<BrowserItem>,
+    controller: LocalAppController,
+    mediaPreview: MediaPreviewProvider,
+) {
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Galería", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         Text("Fotos y videos cifrados de toda la bóveda", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -355,21 +371,45 @@ private fun GalleryScreen(items: List<BrowserItem>, controller: LocalAppControll
                 contentPadding = PaddingValues(bottom = 24.dp),
             ) {
                 gridItems(items, key = { it.id }) { item ->
+                    val isVideo = item.isVideoMedia()
+                    val preview by produceState<ImageBitmap?>(
+                        initialValue = null,
+                        key1 = item.id,
+                        key2 = mediaPreview,
+                    ) {
+                        if (!isVideo) value = mediaPreview.load(item.id, 512)
+                    }
                     ElevatedCard(Modifier.fillMaxWidth().clickable { controller.openFile(item.id) }) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.secondaryContainer) {
-                                Box(Modifier.fillMaxWidth().height(88.dp), contentAlignment = Alignment.Center) {
-                                    Text(if (item.mime?.startsWith("video/") == true) "▶" else "▧", style = MaterialTheme.typography.headlineLarge)
+                                Box(Modifier.fillMaxWidth().height(118.dp), contentAlignment = Alignment.Center) {
+                                    if (preview != null) {
+                                        Image(
+                                            bitmap = preview!!,
+                                            contentDescription = item.name,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop,
+                                        )
+                                    } else {
+                                        Text(if (isVideo) "▶" else "▧", style = MaterialTheme.typography.headlineLarge)
+                                    }
                                 }
                             }
                             Text(item.name, fontWeight = FontWeight.Medium, maxLines = 2)
-                            item.mime?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            item.mime?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+private fun BrowserItem.isVideoMedia(): Boolean {
+    if (mime?.startsWith("video/", ignoreCase = true) == true) return true
+    return name.substringAfterLast('.', "").lowercase() in setOf("mp4", "m4v", "mov", "webm", "mkv", "avi")
 }
 
 @Composable
