@@ -10,10 +10,12 @@ import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
+import dev.veilshare.ui.features.QuickUnlockProvider
 import dev.veilshare.ui.features.RootState
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingRuntime
+import dev.veilshare.ui.features.UnavailableQuickUnlockProvider
 import dev.veilshare.ui.features.UnavailableSharingRuntime
 import dev.veilshare.ui.features.VaultFileOpener
 import dev.veilshare.ui.features.WorkspaceFoundationScreen
@@ -31,6 +33,7 @@ data class AppEnvironment(
     val opener: VaultFileOpener,
     val sharingFilePicker: SharingFilePicker = UnavailableSharingFilePicker,
     val sharingRuntime: SharingRuntime = UnavailableSharingRuntime,
+    val quickUnlock: QuickUnlockProvider = UnavailableQuickUnlockProvider,
     val lockSignals: Flow<Unit> = emptyFlow(),
     val externalImportSignals: Flow<Unit> = emptyFlow(),
 )
@@ -46,6 +49,7 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
             sharingFilePicker = environment.sharingFilePicker,
             sharingRuntime = environment.sharingRuntime,
             scope = scope,
+            quickUnlock = environment.quickUnlock,
         )
     }
     LaunchedEffect(controller) { controller.initialize() }
