@@ -29,6 +29,8 @@ class LocalAppController(
     val state: StateFlow<RootState> = mutableState.asStateFlow()
     private val mutableContacts = MutableStateFlow<List<SharingContactSummary>>(emptyList())
     val contacts: StateFlow<List<SharingContactSummary>> = mutableContacts.asStateFlow()
+    private val mutableViewerItem = MutableStateFlow<BrowserItem?>(null)
+    val viewerItem: StateFlow<BrowserItem?> = mutableViewerItem.asStateFlow()
     private var active: VaultHandle? = null
     private var activePersonaId: dev.veilshare.core.model.LocalPersonaId? = null
     private var importJob: Job? = null
@@ -140,7 +142,6 @@ class LocalAppController(
                 mutableState.value = RootState.Locked(error = "No se pudo usar el desbloqueo biométrico. Usa tu código.")
                 return@launch
             }
-            // Re-enter the single authoritative credential path. unlock() owns and clears it.
             mutableState.value = RootState.Locked()
             unlock(credential)
         }
@@ -189,11 +190,34 @@ class LocalAppController(
     fun openFile(id: String) {
         val vault = active ?: return
         val file = vault.find(VaultItemId(id)) as? VaultItem.File ?: return
+        if (file.isPhotoMedia()) {
+            mutableViewerItem.value = browserItem(file)
+            return
+        }
         scope.launch {
             setOperation(BrowserOperation.Busy("Abriendo…"))
             try { withContext(workDispatcher) { opener.open(vault, file) }; setOperation(BrowserOperation.Idle) }
             catch (_: Exception) { setMessage("No se pudo abrir este archivo. Puede estar dañado.") }
         }
+    }
+
+    fun closeViewer() {
+        mutableViewerItem.value = null
+    }
+
+    fun shareVaultItem(id: String) {
+        if (mutableState.value !is RootState.Unlocked) return
+        val vault = active ?: return
+        val file = vault.find(VaultItemId(id)) as? VaultItem.File ?: return
+        val previous = selectedSharingFile
+        selectedSharingFile = VaultSharingPickedFile(vault, file)
+        mutableViewerItem.value = null
+        if (previous != null) {
+            scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { previous.close() } } }
+        }
+        mutableState.value = RootState.SharingSender(
+            SharingSenderState.Preparing(selectedFile = file.displayName),
+        )
     }
 
     fun delete(id: String) = mutate("Eliminando…") { vault, _ ->
@@ -226,6 +250,7 @@ class LocalAppController(
         ownSharingReferenceCode = null
         activePersonaId = null
         deleteOriginalAfterImport = false
+        mutableViewerItem.value = null
         picker.setDeleteOriginalAfterImport(false)
         mutableContacts.value = emptyList()
         quickUnlock.discardPendingEnrollment()
@@ -299,7 +324,6 @@ class LocalAppController(
                     )
                     return@launch
                 }
-                // Runtime owns the file from this point and must close it exactly once.
                 val result = withContext(workDispatcher) {
                     sharingRuntime.send(referenceCode, file) { progress ->
                         mutableState.value = RootState.SharingSender(SharingSenderState.Sending(progress))
@@ -541,8 +565,6 @@ class LocalAppController(
         if (mutableState.value !is RootState.Unlocked) return
         if (sharingJob?.isActive == true || receiverPresenceJob?.isActive == true) return
 
-        // If activation during unlock already produced a reference code, move into the
-        // receiver state synchronously so a fast incoming OFFER cannot race with refresh.
         ownSharingReferenceCode?.let { referenceCode ->
             mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
         }
@@ -720,6 +742,13 @@ class LocalAppController(
         }
         walk(null)
         return result.sortedBy { it.name.lowercase() }
+    }
+
+    private fun VaultItem.File.isPhotoMedia(): Boolean {
+        if (mimeType?.startsWith("image/", ignoreCase = true) == true) return true
+        return displayName.substringAfterLast('.', "").lowercase() in setOf(
+            "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp",
+        )
     }
 
     private fun VaultItem.File.isGalleryMedia(): Boolean {
