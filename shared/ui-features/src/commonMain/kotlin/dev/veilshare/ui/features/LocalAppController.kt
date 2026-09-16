@@ -32,6 +32,7 @@ class LocalAppController(
     private var activePersonaId: dev.veilshare.core.model.LocalPersonaId? = null
     private var importJob: Job? = null
     private var sharingJob: Job? = null
+    private var receiverPresenceJob: Job? = null
     private var sharingEventsJob: Job? = null
     private var selectedSharingFile: SharingPickedFile? = null
     private var ownSharingReferenceCode: dev.veilshare.core.model.ReferenceCode? = null
@@ -163,6 +164,7 @@ class LocalAppController(
     fun lock(message: String? = null) {
         importJob?.cancel(); importJob = null
         sharingJob?.cancel(); sharingJob = null
+        receiverPresenceJob?.cancel(); receiverPresenceJob = null
         closeSelectedSharingFileAsync()
         ownSharingReferenceCode = null
         activePersonaId = null
@@ -452,6 +454,7 @@ class LocalAppController(
 
     fun cancelSharing() {
         sharingJob?.cancel(); sharingJob = null
+        receiverPresenceJob?.cancel(); receiverPresenceJob = null
         closeSelectedSharingFileAsync()
         scope.launch {
             withContext(NonCancellable + workDispatcher) {
@@ -468,6 +471,7 @@ class LocalAppController(
     }
 
     fun finishSharing() {
+        receiverPresenceJob?.cancel(); receiverPresenceJob = null
         closeSelectedSharingFileAsync()
         scope.launch { withContext(NonCancellable + workDispatcher) { runCatching { sharingRuntime.dismissPendingPeerVerification() } } }
         returnToBrowser()
@@ -475,7 +479,7 @@ class LocalAppController(
 
     fun startSharingReceiver() {
         if (mutableState.value !is RootState.Unlocked) return
-        if (sharingJob?.isActive == true) return
+        if (sharingJob?.isActive == true || receiverPresenceJob?.isActive == true) return
 
         // If activation during unlock already produced a reference code, move into the
         // receiver state synchronously so a fast incoming OFFER cannot race with refresh.
@@ -483,7 +487,7 @@ class LocalAppController(
             mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
         }
 
-        sharingJob = scope.launch {
+        receiverPresenceJob = scope.launch {
             try {
                 when (val presence = withContext(workDispatcher) { ensureSharingPresence() }) {
                     is SharingRuntimeActivation.Ready -> {
@@ -518,7 +522,7 @@ class LocalAppController(
                     )
                 }
             } finally {
-                sharingJob = null
+                receiverPresenceJob = null
             }
         }
     }
