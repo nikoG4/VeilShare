@@ -15,6 +15,8 @@ import dev.veilshare.core.model.RandomBytesSource
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.platform.SignalingClient
+import dev.veilshare.core.platform.VeilShareDiagnostics
+import dev.veilshare.core.platform.diagnosticId
 import dev.veilshare.core.transfer.DecodedPeerMessage
 import dev.veilshare.core.transfer.EstablishedSessionSide
 import dev.veilshare.core.transfer.EstablishedTransferCrypto
@@ -114,6 +116,7 @@ internal class InboundSharingCoordinator(
             return false
         }
         if (routed.message !is DecodedPeerMessage.Hello) return false
+        VeilShareDiagnostics.share("session_hello_received", "sessionId=${diagnosticId(sessionId.value)}")
 
         val context = mutex.withLock {
             if (closed) return@withLock null
@@ -153,12 +156,28 @@ internal class InboundSharingCoordinator(
         var transferCrypto: EstablishedTransferCrypto? = null
         try {
             when (sessions.beginInbound(contextId, sessionId, routedHello)) {
-                is ManagedInboundBeginResult.Pending -> Unit
-                is ManagedInboundBeginResult.UnknownPeer,
-                is ManagedInboundBeginResult.ReplayRejected,
-                is ManagedInboundBeginResult.ReplayCapacityRejected,
-                is ManagedInboundBeginResult.RegistryDuplicate,
-                is ManagedInboundBeginResult.RegistryCapacityRejected -> return
+                is ManagedInboundBeginResult.Pending ->
+                    VeilShareDiagnostics.share("inbound_handshake_pending", "sessionId=${diagnosticId(sessionId.value)}")
+                is ManagedInboundBeginResult.UnknownPeer -> {
+                    VeilShareDiagnostics.share("inbound_handshake_unknown_peer", "sessionId=${diagnosticId(sessionId.value)}")
+                    return
+                }
+                is ManagedInboundBeginResult.ReplayRejected -> {
+                    VeilShareDiagnostics.share("inbound_handshake_replay_rejected", "sessionId=${diagnosticId(sessionId.value)}")
+                    return
+                }
+                is ManagedInboundBeginResult.ReplayCapacityRejected -> {
+                    VeilShareDiagnostics.share("inbound_handshake_replay_capacity", "sessionId=${diagnosticId(sessionId.value)}")
+                    return
+                }
+                is ManagedInboundBeginResult.RegistryDuplicate -> {
+                    VeilShareDiagnostics.share("inbound_handshake_duplicate", "sessionId=${diagnosticId(sessionId.value)}")
+                    return
+                }
+                is ManagedInboundBeginResult.RegistryCapacityRejected -> {
+                    VeilShareDiagnostics.share("inbound_handshake_registry_capacity", "sessionId=${diagnosticId(sessionId.value)}")
+                    return
+                }
             }
 
             channel = claimInbox(sessionId)
@@ -230,6 +249,7 @@ internal class InboundSharingCoordinator(
             }
             promoted = true
             transferCrypto = null // CurrentInbound/IncomingSharingTransfer owns it now.
+            VeilShareDiagnostics.share("offer_received", "sessionId=${diagnosticId(sessionId.value)} fileSize=${incomingOffer.offer.sizeBytes} totalChunks=${incomingOffer.offer.totalChunks}")
             eventSink(
                 SharingRuntimeEvent.IncomingOffer(
                     senderIdentity = alias,
@@ -239,7 +259,8 @@ internal class InboundSharingCoordinator(
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            VeilShareDiagnostics.share("inbound_handshake_failure", "sessionId=${diagnosticId(sessionId.value)} errorClass=${failure::class.simpleName ?: "Unknown"}")
             if (mutex.withLock { activeContext == contextId && !closed }) {
                 eventSink(SharingRuntimeEvent.Failed("No se pudo establecer la transferencia entrante."))
             }
@@ -265,11 +286,13 @@ internal class InboundSharingCoordinator(
             value
         }
         try {
+            VeilShareDiagnostics.share("offer_accepted", "sessionId=${diagnosticId(inbound.sessionId.value)}")
             inbound.transfer.accept()
             while (true) {
                 val envelope = withTimeout(INBOUND_IDLE_TIMEOUT_MS) { inbound.channel.receive() }
                 when (val result = inbound.transfer.dispatch(envelope)) {
                     is IncomingDispatchResult.Data -> {
+                        VeilShareDiagnostics.share("data_rx", "sessionId=${diagnosticId(inbound.sessionId.value)}")
                         emitReceiverProgress(inbound)
                         if (result.result is ReceiveResult.Error) {
                             eventSink(SharingRuntimeEvent.Failed("La recepción falló."))
@@ -278,6 +301,7 @@ internal class InboundSharingCoordinator(
                         }
                     }
                     IncomingDispatchResult.ReadyToImport -> {
+                        VeilShareDiagnostics.share("vault_import_start", "sessionId=${diagnosticId(inbound.sessionId.value)}")
                         inbound.transfer.importIntoVault(inbound.vault)
                         eventSink(
                             SharingRuntimeEvent.Receiving(
@@ -290,6 +314,7 @@ internal class InboundSharingCoordinator(
                             ),
                         )
                         eventSink(SharingRuntimeEvent.IncomingCompleted)
+                        VeilShareDiagnostics.share("transfer_complete", "sessionId=${diagnosticId(inbound.sessionId.value)}")
                         finish(inbound)
                         return
                     }

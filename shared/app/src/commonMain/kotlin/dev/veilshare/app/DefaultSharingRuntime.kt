@@ -26,6 +26,8 @@ import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.platform.SignalingClient
+import dev.veilshare.core.platform.VeilShareDiagnostics
+import dev.veilshare.core.platform.diagnosticId
 import dev.veilshare.core.transfer.DefaultTransferSender
 import dev.veilshare.core.transfer.EstablishedPeerSession
 import dev.veilshare.core.transfer.EstablishedSessionSide
@@ -157,6 +159,7 @@ class DefaultSharingRuntime(
 
     override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation {
         if (closed) return SharingRuntimeActivation.Unavailable("Sharing runtime is closed")
+        VeilShareDiagnostics.share("runtime_activate_start")
         deactivate()
         return try {
             val contextId = contextBindings.getOrCreate(personaId)
@@ -167,8 +170,10 @@ class DefaultSharingRuntime(
                 pendingVerification = null
             }
             inbound.activate(contextId, vault)
+            VeilShareDiagnostics.share("runtime_activate_ready")
             SharingRuntimeActivation.Ready(registered.presence.referenceCode)
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            VeilShareDiagnostics.share("runtime_activate_failure", "errorClass=${failure::class.simpleName ?: "Unknown"}")
             stateMutex.withLock {
                 activeContext = null
                 activeVault = null
@@ -180,9 +185,12 @@ class DefaultSharingRuntime(
     }
 
     private suspend fun restoreTransport(contextId: SharingContextId): dev.veilshare.core.transfer.ActiveSharingPresence {
+        VeilShareDiagnostics.share("transport_restore_start")
         signalingClient.connect()
         ensureCollector()
-        return lifecycle.ensureRegistered(contextId)
+        return lifecycle.ensureRegistered(contextId).also {
+            VeilShareDiagnostics.share("transport_restore_registered")
+        }
     }
 
     override suspend fun refreshPresence(): SharingRuntimeActivation {
@@ -213,6 +221,7 @@ class DefaultSharingRuntime(
     }
 
     override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
+        VeilShareDiagnostics.share("lookup_start")
         val contextId = stateMutex.withLock {
             pendingVerification = null
             activeContext
@@ -266,7 +275,8 @@ class DefaultSharingRuntime(
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            VeilShareDiagnostics.share("lookup_failure", "errorClass=${failure::class.simpleName ?: "Unknown"}")
             stateMutex.withLock { pendingVerification = null }
             SharingPeerLookupResult.Failed("No se pudo comprobar la identidad del contacto.")
         }
@@ -291,6 +301,7 @@ class DefaultSharingRuntime(
         var transferCrypto: EstablishedTransferCrypto? = null
         var outgoingTransfer: OutgoingSharingTransfer? = null
         try {
+            VeilShareDiagnostics.share("send_start", "fileSize=${file.size} mimePresent=${file.mimeType != null}")
             val contextId = stateMutex.withLock {
                 pendingVerification = null
                 activeContext
@@ -300,10 +311,12 @@ class DefaultSharingRuntime(
                 restoreTransport(contextId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Throwable) {
+            } catch (failure: Throwable) {
+                VeilShareDiagnostics.share("send_transport_failure", "errorClass=${failure::class.simpleName ?: "Unknown"}")
                 return SharingSendResult.Unavailable("Se perdió la conexión de compartir. Vuelve a intentarlo.")
             }
 
+            VeilShareDiagnostics.share("sender_lookup_start")
             val start = starter.start(contextId, referenceCode)
             val started = when (start) {
                 is OutboundSessionStartResult.NeedsVerification -> {
@@ -329,11 +342,13 @@ class DefaultSharingRuntime(
                 is OutboundSessionStartResult.Started -> start
             }
 
+            VeilShareDiagnostics.share("handshake_wait_confirm", "sessionId=${diagnosticId(started.sessionId.value)}")
             channel = claimSessionInbox(started.sessionId)
             val confirmEnvelope = withTimeout(handshakeTimeoutMs) { channel.receive() }
             val routedConfirm = handshakeInbox.decodeRoutedRelay(confirmEnvelope)
             val completion = completer.complete(started, routedConfirm)
             session = completion.session
+            VeilShareDiagnostics.share("handshake_complete", "sessionId=${diagnosticId(started.sessionId.value)}")
 
             val transferId = OpaqueIds.transferId(idRandom)
             val fileId = FileId(OpaqueIds.fromRandom(idRandom))
@@ -358,6 +373,7 @@ class DefaultSharingRuntime(
             outgoingTransfer = outgoing
             transferOwnsFile = true
             stateMutex.withLock { currentOutgoing = outgoing }
+            VeilShareDiagnostics.share("offer_send", "sessionId=${diagnosticId(started.sessionId.value)}")
             outgoing.sendOffer()
 
             val control = withTimeout(offerResponseTimeoutMs) {
@@ -375,6 +391,7 @@ class DefaultSharingRuntime(
 
             when (control) {
                 OutgoingControlResult.Accepted -> {
+                    VeilShareDiagnostics.share("offer_accepted")
                     val result = try {
                         sendAcceptedWithRemoteControl(outgoing, channel)
                     } catch (cancelled: CancellationException) {
@@ -407,7 +424,8 @@ class DefaultSharingRuntime(
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            VeilShareDiagnostics.share("send_failure", "errorClass=${failure::class.simpleName ?: "Unknown"}")
             return SharingSendResult.Failed("No se pudo completar la transferencia.")
         } finally {
             val outgoing = outgoingTransfer
@@ -488,20 +506,25 @@ class DefaultSharingRuntime(
     }
 
     override suspend fun acceptIncoming() {
+        VeilShareDiagnostics.share("offer_accept_start")
         inbound.acceptIncoming()
+        VeilShareDiagnostics.share("offer_accept_complete")
     }
 
     override suspend fun rejectIncoming() {
+        VeilShareDiagnostics.share("offer_reject_start")
         inbound.rejectIncoming()
     }
 
     override suspend fun cancelCurrent() {
+        VeilShareDiagnostics.share("transfer_cancel_start")
         val outgoing = stateMutex.withLock { currentOutgoing }
         if (outgoing != null) runCatching { outgoing.cancel("local cancellation") }
         inbound.cancelCurrent()
     }
 
     override suspend fun deactivate() {
+        VeilShareDiagnostics.share("runtime_deactivate_start")
         val context = stateMutex.withLock {
             val value = activeContext
             activeContext = null
@@ -514,6 +537,7 @@ class DefaultSharingRuntime(
         if (context != null) runCatching { lifecycle.deactivate(context) }
         clearSessionInboxes()
         runCatching { signalingClient.close() }
+        VeilShareDiagnostics.share("runtime_deactivate_complete")
     }
 
     override fun close() {
@@ -535,6 +559,7 @@ class DefaultSharingRuntime(
         // between launch() and collector startup and disappear.
         collectorJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             signalingClient.incoming.collect { envelope ->
+                VeilShareDiagnostics.share("incoming_envelope", "type=${envelope.type} sessionId=${envelope.sessionId?.value?.let(::diagnosticId) ?: "none"}")
                 if (envelope.type != MessageType.RELAY) return@collect
                 val sessionId = envelope.sessionId ?: return@collect
                 routeRelay(sessionId, envelope)

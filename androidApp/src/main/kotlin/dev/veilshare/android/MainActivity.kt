@@ -24,6 +24,7 @@ import dev.veilshare.app.AppEnvironment
 import dev.veilshare.app.AppRoot
 import dev.veilshare.app.createAndroidSharingRuntime
 import dev.veilshare.core.vault.*
+import android.util.Log
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.SharingFilePicker
@@ -63,7 +64,13 @@ class MainActivity : FragmentActivity() {
                     endpointUrl = url,
                     allowInsecureLoopback = BuildConfig.DEBUG,
                 )
-            }.getOrElse { UnavailableSharingRuntime }
+            }.getOrElse { failure ->
+                Log.i(
+                    "VeilShareSignal",
+                    "event=runtime_create_fallback errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message?.replace(Regex("[\\r\\n\\t]"), " ")?.take(160) ?: "none"}",
+                )
+                UnavailableSharingRuntime
+            }
         } ?: UnavailableSharingRuntime
         val mediaPreview = AndroidVaultMediaPreviewProvider()
         val vaultService = PreviewTrackingLocalVaultService(

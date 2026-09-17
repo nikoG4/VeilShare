@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlin.time.TimeSource
 
 class KtorSignalingClient(
     private val httpClient: HttpClient,
@@ -65,7 +66,10 @@ class KtorSignalingClient(
     override suspend fun connect() {
         connectionMutex.withLock {
             val current = session
-            if (current?.coroutineContext?.get(Job)?.isActive == true) return
+            if (current?.coroutineContext?.get(Job)?.isActive == true) {
+                VeilShareDiagnostics.signal("ws_connect_reuse", "sessionJobActive=true")
+                return
+            }
 
             keepAliveJob?.cancel()
             keepAliveJob = null
@@ -74,10 +78,25 @@ class KtorSignalingClient(
             runCatching { current?.close() }
             session = null
 
-            val opened = httpClient.webSocketSession { url(endpointUrl) }
+            val start = TimeSource.Monotonic.markNow()
+            VeilShareDiagnostics.signal("ws_connect_start", "endpointConfigured=true")
+            val opened = try {
+                httpClient.webSocketSession { url(endpointUrl) }
+            } catch (failure: Throwable) {
+                VeilShareDiagnostics.signal(
+                    "ws_connect_failure",
+                    "elapsedMs=${start.elapsedNow().inWholeMilliseconds} errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}",
+                )
+                throw failure
+            }
+            VeilShareDiagnostics.signal(
+                "ws_connect_success",
+                "elapsedMs=${start.elapsedNow().inWholeMilliseconds} sessionJobActive=${opened.coroutineContext[Job]?.isActive == true}",
+            )
             session = opened
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { clientScope ->
                 clientScope.launch {
+                    VeilShareDiagnostics.signal("receive_loop_launch", "sessionJobActive=${opened.coroutineContext[Job]?.isActive == true}")
                     receiveLoop(opened)
                 }
             }
@@ -85,13 +104,16 @@ class KtorSignalingClient(
     }
 
     override suspend fun register(request: RegisterRequest) {
+        VeilShareDiagnostics.signal("register_start")
         val response = sendRequest(MessageType.REGISTER, request)
         if (response.type == MessageType.ERROR) throw response.asClientException()
         registeredPresence = request
         startRegistrationKeepAlive()
+        VeilShareDiagnostics.signal("register_complete")
     }
 
     override suspend fun unregister(request: UnregisterRequest) {
+        VeilShareDiagnostics.signal("unregister_start")
         val response = sendRequest(MessageType.UNREGISTER, request)
         if (response.type == MessageType.ERROR) throw response.asClientException()
         if (registeredPresence?.sharingIdentityId == request.sharingIdentityId) {
@@ -102,17 +124,22 @@ class KtorSignalingClient(
     }
 
     override suspend fun lookup(request: LookupRequest): LookupResponse {
+        VeilShareDiagnostics.signal("lookup_start")
         val response = sendRequest(MessageType.LOOKUP, request)
         if (response.type == MessageType.ERROR) throw response.asClientException()
-        return json.decodeFromString(response.payload.decodeToString())
+        val decoded = json.decodeFromString<LookupResponse>(response.payload.decodeToString())
+        VeilShareDiagnostics.signal("lookup_complete", "status=${decoded.status}")
+        return decoded
     }
 
     override suspend fun relay(request: RelayRequest) {
+        VeilShareDiagnostics.signal("relay_start", "sessionId=${diagnosticId(request.sessionId.value)} bytes=${request.opaquePayload.size}")
         val envelope = envelope(MessageType.RELAY, request)
         sendEnvelope(envelope)
     }
 
     override suspend fun close() {
+        VeilShareDiagnostics.signal("connection_close_start")
         val (opened, oldScope) = connectionMutex.withLock {
             val active = session
             val activeScope = scope
@@ -126,6 +153,7 @@ class KtorSignalingClient(
         oldScope?.cancel()
         failPending(CancellationException("Signaling client closed"))
         opened?.close()
+        VeilShareDiagnostics.signal("connection_close_complete")
     }
 
     private fun startRegistrationKeepAlive() {
@@ -140,10 +168,11 @@ class KtorSignalingClient(
                     if (response.type == MessageType.ERROR) throw response.asClientException()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Throwable) {
+                } catch (failure: Throwable) {
                     // Never reconnect here: a transport loss may have happened during an
                     // authenticated transfer. The current operation must fail first; a later
                     // explicit runtime action can establish and register a fresh transport.
+                    VeilShareDiagnostics.signal("registration_keepalive_failure", "errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
                     return@launch
                 }
             }
@@ -152,22 +181,38 @@ class KtorSignalingClient(
 
     private suspend fun receiveLoop(opened: DefaultClientWebSocketSession) {
         var terminalFailure: Throwable? = null
+        VeilShareDiagnostics.signal("receive_loop_start")
         try {
             for (frame in opened.incoming) {
                 if (frame !is Frame.Text) continue
-                val envelope = json.decodeFromString<SignalingEnvelope>(frame.readText())
+                val text = frame.readText()
+                VeilShareDiagnostics.signal("frame_rx", "bytes=${text.encodeToByteArray().size}")
+                val envelope = try {
+                    json.decodeFromString<SignalingEnvelope>(text)
+                } catch (failure: Throwable) {
+                    VeilShareDiagnostics.signal("frame_decode_failure", "errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
+                    throw failure
+                }
                 val deferred = pendingMutex.withLock { pending.remove(envelope.messageId) }
+                VeilShareDiagnostics.signal(
+                    "response_match",
+                    "type=${envelope.type} messageId=${diagnosticId(envelope.messageId.value)} matchedPending=${deferred != null}",
+                )
                 if (deferred != null) {
                     deferred.complete(envelope)
                 } else {
+                    VeilShareDiagnostics.signal("event_dispatch", "type=${envelope.type} sessionId=${envelope.sessionId?.value?.let(::diagnosticId) ?: "none"}")
                     events.emit(envelope)
                 }
             }
             terminalFailure = SignalingConnectionClosedException("Signaling connection closed")
+            VeilShareDiagnostics.signal("receive_loop_closed", "reason=channel_complete")
         } catch (cancelled: CancellationException) {
+            VeilShareDiagnostics.signal("receive_loop_cancelled")
             throw cancelled
         } catch (failure: Throwable) {
             terminalFailure = failure
+            VeilShareDiagnostics.signal("receive_loop_failure", "errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
         } finally {
             if (session === opened) {
                 keepAliveJob?.cancel()
@@ -191,11 +236,27 @@ class KtorSignalingClient(
         val envelope = envelope(type, payload)
         val deferred = CompletableDeferred<SignalingEnvelope>()
         pendingMutex.withLock { pending[envelope.messageId] = deferred }
+        val start = TimeSource.Monotonic.markNow()
+        VeilShareDiagnostics.signal("request_prepare", "type=$type messageId=${diagnosticId(envelope.messageId.value)} pendingRegistered=true")
         try {
+            VeilShareDiagnostics.signal("request_send_start", "type=$type messageId=${diagnosticId(envelope.messageId.value)}")
             sendEnvelope(envelope)
-            return withTimeout(timeoutMillis) { deferred.await() }
+            VeilShareDiagnostics.signal("request_send_complete", "type=$type messageId=${diagnosticId(envelope.messageId.value)}")
+            return try {
+                withTimeout(timeoutMillis) { deferred.await() }
+            } catch (failure: Throwable) {
+                if (failure is kotlinx.coroutines.TimeoutCancellationException) {
+                    VeilShareDiagnostics.signal("request_timeout", "type=$type messageId=${diagnosticId(envelope.messageId.value)} elapsedMs=${start.elapsedNow().inWholeMilliseconds}")
+                } else {
+                    VeilShareDiagnostics.signal("request_failure", "type=$type messageId=${diagnosticId(envelope.messageId.value)} elapsedMs=${start.elapsedNow().inWholeMilliseconds} errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
+                }
+                throw failure
+            }.also {
+                VeilShareDiagnostics.signal("request_complete", "type=$type messageId=${diagnosticId(envelope.messageId.value)} elapsedMs=${start.elapsedNow().inWholeMilliseconds} responseType=${it.type}")
+            }
         } finally {
             pendingMutex.withLock { pending.remove(envelope.messageId) }
+            VeilShareDiagnostics.signal("request_cleanup", "type=$type messageId=${diagnosticId(envelope.messageId.value)}")
         }
     }
 
@@ -211,13 +272,17 @@ class KtorSignalingClient(
         val opened = connectionMutex.withLock { session }
             ?: throw SignalingConnectionClosedException("Signaling client is not connected")
         try {
-            opened.send(Frame.Text(json.encodeToString(envelope)))
+            val serialized = json.encodeToString(envelope)
+            VeilShareDiagnostics.signal("frame_tx", "type=${envelope.type} messageId=${diagnosticId(envelope.messageId.value)} bytes=${serialized.encodeToByteArray().size}")
+            opened.send(Frame.Text(serialized))
+            VeilShareDiagnostics.signal("frame_tx_success", "type=${envelope.type} messageId=${diagnosticId(envelope.messageId.value)}")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Throwable) {
             connectionMutex.withLock {
                 if (session === opened) session = null
             }
+            VeilShareDiagnostics.signal("frame_tx_failure", "type=${envelope.type} messageId=${diagnosticId(envelope.messageId.value)} errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
             throw SignalingConnectionClosedException("Signaling send failed", failure)
         }
     }
@@ -227,6 +292,12 @@ class KtorSignalingClient(
         return SignalingClientException(error ?: ErrorMessage(dev.veilshare.core.model.ErrorCode.INVALID_MESSAGE, "Signaling error"))
     }
 }
+
+private fun String?.safeDiagnostic(): String = this
+    ?.replace(Regex("[\\r\\n\\t]"), " ")
+    ?.take(160)
+    ?.ifBlank { "none" }
+    ?: "none"
 
 class SignalingClientException(val error: ErrorMessage) : RuntimeException(error.details)
 class SignalingConnectionClosedException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
