@@ -28,8 +28,19 @@ class PresenceRegistry(
         cleanupExpired()
         require(sharingPublicKey.isNotBlank() && sharingPublicKey.length <= 512)
         val existing = byReferenceCode[referenceCode]
-        require(existing == null || existing.connectionId == connectionId) { "Reference code already registered" }
+        val sameOwner = existing != null &&
+            existing.sharingIdentityId == sharingIdentityId &&
+            existing.sharingPublicKey == sharingPublicKey
+        require(existing == null || existing.connectionId == connectionId || sameOwner) {
+            "Reference code already registered"
+        }
         require(byReferenceCode.size < limits.maxPresenceEntries || existing != null) { "Presence registry full" }
+        if (existing != null && existing.connectionId != connectionId) {
+            byConnection[existing.connectionId]?.remove(referenceCode)
+            if (byConnection[existing.connectionId]?.isEmpty() == true) {
+                byConnection.remove(existing.connectionId)
+            }
+        }
         val ownedCodes = byConnection.getOrPut(connectionId) { linkedSetOf() }
         require(ownedCodes.size < limits.maxRegistrationsPerConnection || referenceCode in ownedCodes) {
             "Connection registration limit exceeded"
@@ -67,7 +78,12 @@ class PresenceRegistry(
 
     fun unregisterConnection(connectionId: ConnectionId) {
         val codes = byConnection.remove(connectionId).orEmpty()
-        codes.forEach { byReferenceCode.remove(it) }
+        codes.forEach { code ->
+            // A delayed close from an old socket must not erase a newer registration.
+            if (byReferenceCode[code]?.connectionId == connectionId) {
+                byReferenceCode.remove(code)
+            }
+        }
     }
 
     fun cleanupExpired(): Int {

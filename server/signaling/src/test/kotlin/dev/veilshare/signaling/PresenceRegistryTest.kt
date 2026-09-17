@@ -37,6 +37,22 @@ class PresenceRegistryTest {
         }
     }
 
+    @Test fun sameIdentityCanMovePresenceToNewConnectionWithoutOldCleanupErasingIt() {
+        val registry = PresenceRegistry(MutableSignalingClock())
+        val code = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
+        val identity = SharingIdentityId("identity-a")
+        val oldConnection = ConnectionId("old")
+        val newConnection = ConnectionId("new")
+
+        registry.register(code, oldConnection, identity, "key-a")
+        registry.register(code, newConnection, identity, "key-a")
+        registry.unregisterConnection(oldConnection)
+
+        assertEquals(newConnection, registry.lookup(code)?.connectionId)
+        registry.unregisterConnection(newConnection)
+        assertNull(registry.lookup(code))
+    }
+
     @Test fun perConnectionLimitIsBounded() {
         val registry = PresenceRegistry(
             MutableSignalingClock(),
