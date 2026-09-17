@@ -7,9 +7,16 @@ import dev.veilshare.core.model.RelayRequest
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.model.UnregisterRequest
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+
+sealed interface SignalingTransportEvent {
+    data object Connected : SignalingTransportEvent
+    data class Disconnected(val reason: String) : SignalingTransportEvent
+}
 
 interface SignalingClient {
     val incoming: Flow<SignalingEnvelope>
+    val transportEvents: Flow<SignalingTransportEvent> get() = emptyFlow()
 
     suspend fun connect()
     suspend fun register(request: RegisterRequest)

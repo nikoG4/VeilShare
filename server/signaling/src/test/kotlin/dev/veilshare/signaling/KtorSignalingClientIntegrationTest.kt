@@ -11,21 +11,29 @@ import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SharingIdentityId
 import dev.veilshare.core.model.UnregisterRequest
 import dev.veilshare.core.platform.KtorSignalingClient
+import dev.veilshare.core.platform.SignalingTransportEvent
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.server.testing.testApplication
+import io.ktor.server.application.install
+import io.ktor.server.routing.routing
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.close
+import io.ktor.server.websocket.WebSockets as ServerWebSockets
+import io.ktor.server.websocket.webSocket
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertFails
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.withTimeout
 
 class KtorSignalingClientIntegrationTest {
@@ -156,6 +164,50 @@ class KtorSignalingClientIntegrationTest {
             val afterReconnect = signaling.lookup(LookupRequest(code, identity))
             assertEquals(LookupStatus.FOUND, afterReconnect.status)
             assertEquals(identity, afterReconnect.sharingIdentityId)
+        } finally {
+            signaling.close()
+        }
+    }
+
+    @Test
+    fun cleanRemoteCompletionEmitsDisconnectedAndFailsPendingRequest() = testApplication {
+        application {
+            install(ServerWebSockets)
+            routing {
+                webSocket("/drop-after-request") {
+                    incoming.receive()
+                    close(CloseReason(CloseReason.Codes.GOING_AWAY, "intentional test close"))
+                }
+            }
+        }
+        val http = createClient { install(WebSockets) }
+        val signaling = KtorSignalingClient(
+            httpClient = http,
+            endpointUrl = "/drop-after-request",
+            random = CountingEntropy(150),
+            timeoutMillis = 5_000,
+        )
+
+        try {
+            signaling.connect()
+            supervisorScope {
+                val disconnected = async(start = CoroutineStart.UNDISPATCHED) {
+                    withTimeout(5_000) {
+                        signaling.transportEvents.filterIsInstance<SignalingTransportEvent.Disconnected>().first()
+                    }
+                }
+                val request = async {
+                    signaling.lookup(
+                        LookupRequest(
+                            ReferenceCodes.parse("2345-6789-ABCD-EFGH"),
+                            SharingIdentityId("pending-client"),
+                        ),
+                    )
+                }
+
+                assertFails { request.await() }
+                assertEquals("SignalingConnectionClosedException", disconnected.await().reason)
+            }
         } finally {
             signaling.close()
         }

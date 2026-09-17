@@ -35,12 +35,15 @@ import dev.veilshare.ui.features.SharingVerificationResult
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.server.testing.testApplication
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
 import java.io.ByteArrayOutputStream
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -51,9 +54,92 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
 class FullSharingRuntimeE2ETest {
+    @Test
+    fun idleRuntimeReconnectsAndReregistersSamePresenceAfterTransportLoss() = testApplication {
+        val state = SignalingServerState(clock = SignalingClock { System.currentTimeMillis() })
+        application { signalingModule(state) }
+        val http = createClient { install(WebSockets) }
+        val alice = RuntimeFixture(http, LocalPersonaId("c".repeat(64)))
+
+        try {
+            val activation = assertIs<SharingRuntimeActivation.Ready>(
+                alice.runtime.activate(alice.personaId, alice.vault),
+            )
+            val original = assertNotNull(state.presence.lookup(activation.referenceCode))
+            assertNotNull(state.sockets[original.connectionId]).close(
+                CloseReason(CloseReason.Codes.GOING_AWAY, "idle transport loss"),
+            )
+
+            withTimeout(10_000) {
+                while (true) {
+                    val recovered = state.presence.lookup(activation.referenceCode)
+                    if (recovered != null && recovered.connectionId != original.connectionId) break
+                    delay(20)
+                }
+            }
+            val recovered = assertNotNull(state.presence.lookup(activation.referenceCode))
+            assertEquals(original.sharingIdentityId, recovered.sharingIdentityId)
+            assertEquals(original.sharingPublicKey, recovered.sharingPublicKey)
+            assertTrue(state.sockets.containsKey(recovered.connectionId))
+        } finally {
+            alice.close()
+        }
+    }
+
+    @Test
+    fun authenticatedActiveTransferDoesNotReconnectUnderTransportLoss() = testApplication {
+        val state = SignalingServerState(clock = SignalingClock { System.currentTimeMillis() })
+        application { signalingModule(state) }
+        val http = createClient { install(WebSockets) }
+        val alice = RuntimeFixture(http, LocalPersonaId("d".repeat(64)))
+        val bob = RuntimeFixture(http, LocalPersonaId("e".repeat(64)))
+
+        try {
+            val aliceActivation = assertIs<SharingRuntimeActivation.Ready>(alice.runtime.activate(alice.personaId, alice.vault))
+            val bobActivation = assertIs<SharingRuntimeActivation.Ready>(bob.runtime.activate(bob.personaId, bob.vault))
+            assertIs<SharingPeerLookupResult.NeedsVerification>(alice.runtime.inspectPeer(bobActivation.referenceCode))
+            assertIs<SharingVerificationResult.Verified>(alice.runtime.confirmPendingPeer("Bob"))
+            assertIs<SharingPeerLookupResult.NeedsVerification>(bob.runtime.inspectPeer(aliceActivation.referenceCode))
+            assertIs<SharingVerificationResult.Verified>(bob.runtime.confirmPendingPeer("Alice"))
+
+            coroutineScope {
+                val incomingOffer = async(start = CoroutineStart.UNDISPATCHED) {
+                    withTimeout(10_000) {
+                        bob.runtime.events.filterIsInstance<SharingRuntimeEvent.IncomingOffer>().first()
+                    }
+                }
+                val sending = async {
+                    alice.runtime.send(
+                        bobActivation.referenceCode,
+                        BytesSharingFile("blocked.bin", ByteArray(32) { it.toByte() }),
+                    ) { }
+                }
+                incomingOffer.await()
+                val transportFailure = async(start = CoroutineStart.UNDISPATCHED) {
+                    withTimeout(5_000) {
+                        alice.runtime.events.filterIsInstance<SharingRuntimeEvent.Failed>().first()
+                    }
+                }
+                val alicePresence = assertNotNull(state.presence.lookup(aliceActivation.referenceCode))
+                assertNotNull(state.sockets[alicePresence.connectionId]).close(
+                    CloseReason(CloseReason.Codes.GOING_AWAY, "active transport loss"),
+                )
+                transportFailure.await()
+                delay(500)
+                assertNull(state.presence.lookup(aliceActivation.referenceCode))
+                sending.cancel()
+            }
+        } finally {
+            alice.close()
+            bob.close()
+        }
+    }
+
     @Test
     fun trustedPeersTransferAndImportMultiChunkFileThroughRealRelay() = testApplication {
         application { signalingModule() }

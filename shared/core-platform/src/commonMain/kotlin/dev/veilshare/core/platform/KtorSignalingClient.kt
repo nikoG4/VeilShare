@@ -23,6 +23,7 @@ import io.ktor.websocket.send
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,7 @@ class KtorSignalingClient(
     private val json: Json = Json { ignoreUnknownKeys = false; encodeDefaults = true },
 ) : SignalingClient {
     private val events = MutableSharedFlow<SignalingEnvelope>(extraBufferCapacity = 64)
+    private val transportLifecycle = MutableSharedFlow<SignalingTransportEvent>(extraBufferCapacity = 8)
     private val pending = mutableMapOf<MessageId, CompletableDeferred<SignalingEnvelope>>()
     private val pendingMutex = Mutex()
     private val connectionMutex = Mutex()
@@ -62,6 +64,7 @@ class KtorSignalingClient(
     }
 
     override val incoming: Flow<SignalingEnvelope> = events
+    override val transportEvents: Flow<SignalingTransportEvent> = transportLifecycle
 
     override suspend fun connect() {
         connectionMutex.withLock {
@@ -95,11 +98,12 @@ class KtorSignalingClient(
             )
             session = opened
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { clientScope ->
-                clientScope.launch {
+                clientScope.launch(start = CoroutineStart.UNDISPATCHED) {
                     VeilShareDiagnostics.signal("receive_loop_launch", "sessionJobActive=${opened.coroutineContext[Job]?.isActive == true}")
                     receiveLoop(opened)
                 }
             }
+            transportLifecycle.tryEmit(SignalingTransportEvent.Connected)
         }
     }
 
@@ -214,14 +218,8 @@ class KtorSignalingClient(
             terminalFailure = failure
             VeilShareDiagnostics.signal("receive_loop_failure", "errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
         } finally {
-            if (session === opened) {
-                keepAliveJob?.cancel()
-                keepAliveJob = null
-            }
-            connectionMutex.withLock {
-                if (session === opened) session = null
-            }
-            terminalFailure?.let { failPending(it) }
+            // A stale loop must not invalidate a replacement session.
+            terminalFailure?.let { disconnectCurrent(opened, it) }
         }
     }
 
@@ -279,12 +277,31 @@ class KtorSignalingClient(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Throwable) {
-            connectionMutex.withLock {
-                if (session === opened) session = null
-            }
             VeilShareDiagnostics.signal("frame_tx_failure", "type=${envelope.type} messageId=${diagnosticId(envelope.messageId.value)} errorClass=${failure::class.simpleName ?: "Unknown"} message=${failure.message.safeDiagnostic()}")
-            throw SignalingConnectionClosedException("Signaling send failed", failure)
+            val closed = SignalingConnectionClosedException("Signaling send failed", failure)
+            disconnectCurrent(opened, closed)
+            throw closed
         }
+    }
+
+    private suspend fun disconnectCurrent(
+        opened: DefaultClientWebSocketSession,
+        failure: Throwable,
+    ) {
+        val wasCurrent = connectionMutex.withLock {
+            if (session !== opened) false else {
+                session = null
+                true
+            }
+        }
+        if (!wasCurrent) return
+        keepAliveJob?.cancel()
+        keepAliveJob = null
+        registeredPresence = null
+        failPending(failure)
+        val reason = failure::class.simpleName ?: "closed"
+        VeilShareDiagnostics.signal("ws_disconnect", "reason=$reason")
+        transportLifecycle.tryEmit(SignalingTransportEvent.Disconnected(reason))
     }
 
     private fun SignalingEnvelope.asClientException(): SignalingClientException {

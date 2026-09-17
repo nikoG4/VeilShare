@@ -26,6 +26,7 @@ import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.platform.SignalingClient
+import dev.veilshare.core.platform.SignalingTransportEvent
 import dev.veilshare.core.platform.VeilShareDiagnostics
 import dev.veilshare.core.platform.diagnosticId
 import dev.veilshare.core.transfer.DefaultTransferSender
@@ -64,6 +65,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -146,6 +148,8 @@ class DefaultSharingRuntime(
     )
 
     private var collectorJob: Job? = null
+    private var transportLifecycleJob: Job? = null
+    private val recoveryMutex = Mutex()
     private var activeContext: SharingContextId? = null
     private var activeVault: VaultHandle? = null
     private var currentOutgoing: OutgoingSharingTransfer? = null
@@ -155,6 +159,11 @@ class DefaultSharingRuntime(
     init {
         require(handshakeTimeoutMs > 0)
         require(offerResponseTimeoutMs > 0)
+        transportLifecycleJob = scope.launch {
+            signalingClient.transportEvents.collect { event ->
+                if (event is SignalingTransportEvent.Disconnected) recoverIdleTransport(event)
+            }
+        }
     }
 
     override suspend fun activate(personaId: LocalPersonaId, vault: VaultHandle): SharingRuntimeActivation {
@@ -191,6 +200,32 @@ class DefaultSharingRuntime(
         return lifecycle.ensureRegistered(contextId).also {
             VeilShareDiagnostics.share("transport_restore_registered")
         }
+    }
+
+    private suspend fun recoverIdleTransport(event: SignalingTransportEvent.Disconnected) = recoveryMutex.withLock {
+        val context = stateMutex.withLock { activeContext }
+        if (closed || context == null) return
+        if (sendMutex.isLocked || inbound.hasActiveWork()) {
+            VeilShareDiagnostics.share("transport_recovery_deferred", "reason=${event.reason} activeOperation=true")
+            mutableEvents.emit(SharingRuntimeEvent.Failed("La conexión de compartir se interrumpió."))
+            return
+        }
+        VeilShareDiagnostics.share("transport_recovery_start", "reason=${event.reason}")
+        var lastFailure: Throwable? = null
+        for (backoffMillis in longArrayOf(250, 500, 1_000, 2_000)) {
+            try {
+                restoreTransport(context)
+                VeilShareDiagnostics.share("transport_recovery_success")
+                return
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                lastFailure = failure
+                delay(backoffMillis)
+            }
+        }
+        VeilShareDiagnostics.share("transport_recovery_failed", "errorClass=${lastFailure?.let { it::class.simpleName } ?: "Unknown"}")
+        mutableEvents.emit(SharingRuntimeEvent.Failed("No se pudo restablecer el canal de compartir."))
     }
 
     override suspend fun refreshPresence(): SharingRuntimeActivation {
@@ -544,6 +579,8 @@ class DefaultSharingRuntime(
         if (closed) return
         closed = true
         collectorJob?.cancel()
+        transportLifecycleJob?.cancel()
+        transportLifecycleJob = null
         collectorJob = null
         sessionInboxes.values.forEach { it.close() }
         sessionInboxes.clear()
