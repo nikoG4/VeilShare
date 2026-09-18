@@ -295,13 +295,16 @@ class KtorSignalingClient(
             }
         }
         if (!wasCurrent) return
+        // incoming can complete while the underlying peer still believes this socket is
+        // alive. Explicitly close it so the signaling server can immediately revoke presence.
+        runCatching { opened.close() }
         keepAliveJob?.cancel()
         keepAliveJob = null
         registeredPresence = null
         failPending(failure)
         val reason = failure::class.simpleName ?: "closed"
         VeilShareDiagnostics.signal("ws_disconnect", "reason=$reason")
-        transportLifecycle.tryEmit(SignalingTransportEvent.Disconnected(reason))
+        transportLifecycle.emit(SignalingTransportEvent.Disconnected(reason))
     }
 
     private fun SignalingEnvelope.asClientException(): SignalingClientException {

@@ -28,19 +28,14 @@ class PresenceRegistry(
         cleanupExpired()
         require(sharingPublicKey.isNotBlank() && sharingPublicKey.length <= 512)
         val existing = byReferenceCode[referenceCode]
-        val sameOwner = existing != null &&
-            existing.sharingIdentityId == sharingIdentityId &&
-            existing.sharingPublicKey == sharingPublicKey
-        require(existing == null || existing.connectionId == connectionId || sameOwner) {
+        // REGISTER contains only public identity material. A different live connection must
+        // never be allowed to take over a routing code merely by copying identityId/publicKey
+        // learned through LOOKUP. Reconnection first closes the old socket; server cleanup
+        // releases its route, after which the new connection can register the same code.
+        require(existing == null || existing.connectionId == connectionId) {
             "Reference code already registered"
         }
         require(byReferenceCode.size < limits.maxPresenceEntries || existing != null) { "Presence registry full" }
-        if (existing != null && existing.connectionId != connectionId) {
-            byConnection[existing.connectionId]?.remove(referenceCode)
-            if (byConnection[existing.connectionId]?.isEmpty() == true) {
-                byConnection.remove(existing.connectionId)
-            }
-        }
         val ownedCodes = byConnection.getOrPut(connectionId) { linkedSetOf() }
         require(ownedCodes.size < limits.maxRegistrationsPerConnection || referenceCode in ownedCodes) {
             "Connection registration limit exceeded"

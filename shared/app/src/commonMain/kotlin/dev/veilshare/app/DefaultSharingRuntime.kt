@@ -17,7 +17,6 @@ import dev.veilshare.core.identity.SharingContextId
 import dev.veilshare.core.identity.SharingIdentityManager
 import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.model.FileId
-import dev.veilshare.core.model.ErrorCode
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.MessageType
@@ -27,7 +26,6 @@ import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.platform.SignalingClient
-import dev.veilshare.core.platform.SignalingClientException
 import dev.veilshare.core.platform.SignalingTransportEvent
 import dev.veilshare.core.platform.VeilShareDiagnostics
 import dev.veilshare.core.platform.diagnosticId
@@ -161,7 +159,9 @@ class DefaultSharingRuntime(
     init {
         require(handshakeTimeoutMs > 0)
         require(offerResponseTimeoutMs > 0)
-        transportLifecycleJob = scope.launch {
+        // Subscribe inline so an immediately-closing socket cannot emit Disconnected before
+        // the runtime has started observing transport lifecycle.
+        transportLifecycleJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             signalingClient.transportEvents.collect { event ->
                 if (event is SignalingTransportEvent.Disconnected) recoverIdleTransport(event)
             }
@@ -199,16 +199,7 @@ class DefaultSharingRuntime(
         VeilShareDiagnostics.share("transport_restore_start")
         signalingClient.connect()
         ensureCollector()
-        val registered = try {
-            lifecycle.ensureRegistered(contextId)
-        } catch (failure: SignalingClientException) {
-            if (failure.error.errorCode != ErrorCode.INVALID_MESSAGE) throw failure
-            // A relay may retain a routing code briefly after its owning socket dies.
-            // Rotate only the routing-only code; identity and verified trust stay intact.
-            VeilShareDiagnostics.share("presence_collision_rotate")
-            lifecycle.rotateAndRegister(contextId)
-        }
-        return registered.also {
+        return lifecycle.ensureRegistered(contextId).also {
             VeilShareDiagnostics.share("transport_restore_registered")
         }
     }
@@ -218,6 +209,10 @@ class DefaultSharingRuntime(
         if (closed || context == null) return
         if (sendMutex.isLocked || inbound.hasActiveWork()) {
             VeilShareDiagnostics.share("transport_recovery_deferred", "reason=${event.reason} activeOperation=true")
+            // Never reconnect underneath an authenticated operation. Closing all routed
+            // session inboxes makes handshake/OFFER waits fail immediately instead of
+            // lingering until the two-minute protocol timeout.
+            clearSessionInboxes()
             mutableEvents.emit(SharingRuntimeEvent.Failed("La conexión de compartir se interrumpió."))
             return
         }

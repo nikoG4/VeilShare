@@ -16,14 +16,9 @@ import dev.veilshare.core.identity.SharingContextBindingManager
 import dev.veilshare.core.identity.SharingIdentityManager
 import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.model.BlobId
-import dev.veilshare.core.model.ErrorCode
-import dev.veilshare.core.model.ErrorMessage
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.RandomBytesSource
-import dev.veilshare.core.model.RegisterRequest
 import dev.veilshare.core.platform.KtorSignalingClient
-import dev.veilshare.core.platform.SignalingClient
-import dev.veilshare.core.platform.SignalingClientException
 import dev.veilshare.core.vault.ImportProgress
 import dev.veilshare.core.vault.ImportSource
 import dev.veilshare.core.vault.VaultDirectoryId
@@ -48,7 +43,6 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
-import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
@@ -65,29 +59,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
 class FullSharingRuntimeE2ETest {
-    @Test
-    fun staleRegistrationCollisionRotatesOnlyReferenceCodeAndRecoversPresence() = testApplication {
-        application { signalingModule() }
-        val http = createClient { install(WebSockets) }
-        val delegate = KtorSignalingClient(
-            httpClient = http,
-            endpointUrl = "/v1/ws",
-            random = SecureIdRandom(JvmSecureRandom()),
-            timeoutMillis = 5_000,
-        )
-        val collision = RejectSecondRegisterClient(delegate)
-        val alice = RuntimeFixture(http, LocalPersonaId("f".repeat(64)), collision)
-
-        try {
-            val first = assertIs<SharingRuntimeActivation.Ready>(alice.runtime.activate(alice.personaId, alice.vault))
-            val recovered = assertIs<SharingRuntimeActivation.Ready>(alice.runtime.refreshPresence())
-            assertNotEquals(first.referenceCode, recovered.referenceCode)
-            assertEquals(3, collision.registerAttempts)
-        } finally {
-            alice.close()
-        }
-    }
-
     @Test
     fun idleRuntimeReconnectsAndReregistersSamePresenceAfterTransportLoss() = testApplication {
         val state = SignalingServerState(clock = SignalingClock { System.currentTimeMillis() })
@@ -159,9 +130,10 @@ class FullSharingRuntimeE2ETest {
                     CloseReason(CloseReason.Codes.GOING_AWAY, "active transport loss"),
                 )
                 transportFailure.await()
-                delay(500)
+                val sendResult = withTimeout(5_000) { sending.await() }
+                assertIs<SharingSendResult.Failed>(sendResult)
+                delay(250)
                 assertNull(state.presence.lookup(aliceActivation.referenceCode))
-                sending.cancel()
             }
         } finally {
             alice.close()
@@ -253,7 +225,6 @@ class FullSharingRuntimeE2ETest {
 private class RuntimeFixture(
     http: HttpClient,
     val personaId: LocalPersonaId,
-    signalingClientOverride: SignalingClient? = null,
 ) {
     private val cryptoRandom = JvmSecureRandom()
     private val idRandom = SecureIdRandom(cryptoRandom)
@@ -261,7 +232,7 @@ private class RuntimeFixture(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val vault = CapturingVault()
 
-    private val signalingClient = signalingClientOverride ?: KtorSignalingClient(
+    private val signalingClient = KtorSignalingClient(
             httpClient = http,
             endpointUrl = "/v1/ws",
             random = idRandom,
@@ -292,21 +263,6 @@ private class RuntimeFixture(
         runtime.close()
         scope.cancel()
         vault.close()
-    }
-}
-
-private class RejectSecondRegisterClient(
-    private val delegate: SignalingClient,
-) : SignalingClient by delegate {
-    var registerAttempts = 0
-        private set
-
-    override suspend fun register(request: RegisterRequest) {
-        registerAttempts++
-        if (registerAttempts == 2) {
-            throw SignalingClientException(ErrorMessage(ErrorCode.INVALID_MESSAGE, "Invalid message"))
-        }
-        delegate.register(request)
     }
 }
 

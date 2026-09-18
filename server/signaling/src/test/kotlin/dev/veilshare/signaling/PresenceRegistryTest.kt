@@ -37,19 +37,20 @@ class PresenceRegistryTest {
         }
     }
 
-    @Test fun sameIdentityCanMovePresenceToNewConnectionWithoutOldCleanupErasingIt() {
+    @Test fun copiedPublicIdentityCannotTakeOverLiveReferenceCode() {
         val registry = PresenceRegistry(MutableSignalingClock())
         val code = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
         val identity = SharingIdentityId("identity-a")
         val oldConnection = ConnectionId("old")
-        val newConnection = ConnectionId("new")
+        val attackerConnection = ConnectionId("attacker")
 
         registry.register(code, oldConnection, identity, "key-a")
-        registry.register(code, newConnection, identity, "key-a")
-        registry.unregisterConnection(oldConnection)
+        assertFailsWith<IllegalArgumentException> {
+            registry.register(code, attackerConnection, identity, "key-a")
+        }
 
-        assertEquals(newConnection, registry.lookup(code)?.connectionId)
-        registry.unregisterConnection(newConnection)
+        assertEquals(oldConnection, registry.lookup(code)?.connectionId)
+        registry.unregisterConnection(oldConnection)
         assertNull(registry.lookup(code))
     }
 

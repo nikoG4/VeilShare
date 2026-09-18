@@ -1,5 +1,6 @@
 package dev.veilshare.signaling
 
+import dev.veilshare.core.model.ErrorCode
 import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.LookupStatus
 import dev.veilshare.core.model.MessageType
@@ -11,6 +12,7 @@ import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SharingIdentityId
 import dev.veilshare.core.model.UnregisterRequest
 import dev.veilshare.core.platform.KtorSignalingClient
+import dev.veilshare.core.platform.SignalingClientException
 import dev.veilshare.core.platform.SignalingTransportEvent
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.get
@@ -27,6 +29,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -93,6 +96,61 @@ class KtorSignalingClientIntegrationTest {
         try {
             verifier.connect()
             val lookup = verifier.lookup(LookupRequest(bobCode, SharingIdentityId("verifier")))
+            assertEquals(LookupStatus.NOT_FOUND, lookup.status)
+        } finally {
+            verifier.close()
+        }
+    }
+
+    @Test
+    fun secondLiveSocketCannotStealReferenceCodeByCopyingPublicIdentity() = testApplication {
+        application { signalingModule() }
+        val http = createClient { install(WebSockets) }
+        val code = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
+        val identity = SharingIdentityId("victim")
+        val victim = KtorSignalingClient(http, "/v1/ws", CountingEntropy(81))
+        val attacker = KtorSignalingClient(http, "/v1/ws", CountingEntropy(82))
+
+        try {
+            victim.connect()
+            victim.register(RegisterRequest(identity, code, "victim-public-key"))
+            attacker.connect()
+
+            val failure = assertFailsWith<SignalingClientException> {
+                attacker.register(RegisterRequest(identity, code, "victim-public-key"))
+            }
+            assertEquals(ErrorCode.INVALID_MESSAGE, failure.error.errorCode)
+
+            val stillOwned = attacker.lookup(LookupRequest(code, SharingIdentityId("observer")))
+            assertEquals(LookupStatus.FOUND, stillOwned.status)
+            assertEquals(identity, stillOwned.sharingIdentityId)
+        } finally {
+            victim.close()
+            attacker.close()
+        }
+    }
+
+    @Test
+    fun closingSocketRevokesPresenceWithoutExplicitUnregister() = testApplication {
+        val state = SignalingServerState(clock = MutableSignalingClock())
+        application { signalingModule(state) }
+        val http = createClient { install(WebSockets) }
+        val code = ReferenceCodes.parse("2345-6789-ABCD-EFGH")
+        val identity = SharingIdentityId("close-cleanup")
+        val owner = KtorSignalingClient(http, "/v1/ws", CountingEntropy(83))
+        val verifier = KtorSignalingClient(http, "/v1/ws", CountingEntropy(84))
+
+        owner.connect()
+        owner.register(RegisterRequest(identity, code, "public-key"))
+        owner.close()
+
+        withTimeout(5_000) {
+            while (state.presence.lookup(code) != null) delay(10)
+        }
+
+        try {
+            verifier.connect()
+            val lookup = verifier.lookup(LookupRequest(code, SharingIdentityId("verifier")))
             assertEquals(LookupStatus.NOT_FOUND, lookup.status)
         } finally {
             verifier.close()
