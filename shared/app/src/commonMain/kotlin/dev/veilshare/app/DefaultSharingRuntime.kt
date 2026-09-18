@@ -17,6 +17,7 @@ import dev.veilshare.core.identity.SharingContextId
 import dev.veilshare.core.identity.SharingIdentityManager
 import dev.veilshare.core.identity.SharingPresenceManager
 import dev.veilshare.core.model.FileId
+import dev.veilshare.core.model.ErrorCode
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.LookupRequest
 import dev.veilshare.core.model.MessageType
@@ -26,6 +27,7 @@ import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.model.SessionId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.platform.SignalingClient
+import dev.veilshare.core.platform.SignalingClientException
 import dev.veilshare.core.platform.SignalingTransportEvent
 import dev.veilshare.core.platform.VeilShareDiagnostics
 import dev.veilshare.core.platform.diagnosticId
@@ -197,7 +199,16 @@ class DefaultSharingRuntime(
         VeilShareDiagnostics.share("transport_restore_start")
         signalingClient.connect()
         ensureCollector()
-        return lifecycle.ensureRegistered(contextId).also {
+        val registered = try {
+            lifecycle.ensureRegistered(contextId)
+        } catch (failure: SignalingClientException) {
+            if (failure.error.errorCode != ErrorCode.INVALID_MESSAGE) throw failure
+            // A relay may retain a routing code briefly after its owning socket dies.
+            // Rotate only the routing-only code; identity and verified trust stay intact.
+            VeilShareDiagnostics.share("presence_collision_rotate")
+            lifecycle.rotateAndRegister(contextId)
+        }
+        return registered.also {
             VeilShareDiagnostics.share("transport_restore_registered")
         }
     }
@@ -236,9 +247,7 @@ class DefaultSharingRuntime(
             return SharingRuntimeActivation.Unavailable("Hay una transferencia activa.")
         }
         return try {
-            signalingClient.connect()
-            ensureCollector()
-            val registered = lifecycle.ensureRegistered(contextId)
+            val registered = restoreTransport(contextId)
             SharingRuntimeActivation.Ready(registered.presence.referenceCode)
         } catch (cancelled: CancellationException) {
             throw cancelled
