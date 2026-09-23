@@ -1,6 +1,8 @@
 package dev.veilshare.ui.features
 
 import dev.veilshare.core.model.ReferenceCodes
+import dev.veilshare.core.platform.VeilShareDiagnostics
+import dev.veilshare.core.platform.diagnosticFingerprint
 import dev.veilshare.core.vault.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -329,6 +331,10 @@ class LocalAppController(
                     )
                     return@launch
                 }
+                VeilShareDiagnostics.share(
+                    "sender_lookup",
+                    "codeFp=${diagnosticFingerprint(referenceCode.value)}",
+                )
                 val result = withContext(workDispatcher) {
                     sharingRuntime.send(referenceCode, file) { progress ->
                         mutableState.value = RootState.SharingSender(SharingSenderState.Sending(progress))
@@ -583,10 +589,9 @@ class LocalAppController(
         if (mutableState.value !is RootState.Unlocked) return
         if (sharingJob?.isActive == true || receiverPresenceJob?.isActive == true) return
 
-        ownSharingReferenceCode?.let { referenceCode ->
-            mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(referenceCode))
-        }
-
+        // Never expose the cached ReferenceCode before a fresh REGISTER/refresh has completed.
+        // The waiting/QR UI is therefore a statement about confirmed server presence, not
+        // merely about the last locally remembered routing code.
         receiverPresenceJob = scope.launch {
             try {
                 when (val presence = withContext(workDispatcher) { ensureSharingPresence() }) {
@@ -596,6 +601,10 @@ class LocalAppController(
                         if (current is RootState.Unlocked ||
                             (current is RootState.SharingReceiver && current.state is SharingReceiverState.Waiting)
                         ) {
+                            VeilShareDiagnostics.share(
+                                "receive_ui_code",
+                                "codeFp=${diagnosticFingerprint(presence.referenceCode.value)}",
+                            )
                             mutableState.value = RootState.SharingReceiver(SharingReceiverState.Waiting(presence.referenceCode))
                         }
                     }
@@ -747,7 +756,6 @@ class LocalAppController(
             mediaItems = collectMedia(vault),
         )
     }
-
     private fun browserItem(item: VaultItem): BrowserItem = when (item) {
         is VaultItem.Directory -> BrowserItem(item.id.value, item.displayName, true)
         is VaultItem.File -> BrowserItem(item.id.value, item.displayName, false, item.size, item.mimeType)
