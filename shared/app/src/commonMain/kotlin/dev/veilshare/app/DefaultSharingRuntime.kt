@@ -57,10 +57,12 @@ import dev.veilshare.ui.features.SharingSendResult
 import dev.veilshare.ui.features.SharingVerificationReason
 import dev.veilshare.ui.features.SharingVerificationResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -419,6 +421,7 @@ class DefaultSharingRuntime(
                 while (true) {
                     when (val result = outgoing.handleControl(channel.receive())) {
                         OutgoingControlResult.Accepted -> return@withTimeout result
+                        OutgoingControlResult.ReceiverCommitted -> Unit
                         is OutgoingControlResult.Rejected -> return@withTimeout result
                         is OutgoingControlResult.RemoteCancel -> return@withTimeout result
                         is OutgoingControlResult.RemoteFailure -> return@withTimeout result
@@ -453,6 +456,8 @@ class DefaultSharingRuntime(
                     )
                     return SharingSendResult.Completed
                 }
+                OutgoingControlResult.ReceiverCommitted ->
+                    error("Receiver commit arrived before OFFER acceptance")
                 is OutgoingControlResult.Rejected ->
                     return SharingSendResult.Failed("El destinatario rechazó el archivo.")
                 is OutgoingControlResult.RemoteCancel ->
@@ -517,28 +522,55 @@ class DefaultSharingRuntime(
     }
 
     /**
-     * DATA sending and post-ACCEPT control reception must run concurrently. PR #3's
-     * state-aware sender stops at the next DATA/COMPLETE boundary only after
-     * OutgoingSharingTransfer.handleControl observes remote CANCEL/FAILURE.
+     * DATA sending and post-ACCEPT control reception run concurrently. A local DATA/COMPLETE
+     * send is not considered successful delivery: after the sender finishes writing bytes it
+     * waits for the receiver's authenticated reverse COMPLETE, emitted only after vault import.
      */
     private suspend fun sendAcceptedWithRemoteControl(
         outgoing: OutgoingSharingTransfer,
         channel: Channel<SignalingEnvelope>,
     ): TransferResult = coroutineScope {
+        val receiverCommit = CompletableDeferred<Unit>()
         val controlJob = launch {
             while (true) {
-                when (outgoing.handleControl(channel.receive())) {
-                    is OutgoingControlResult.RemoteCancel,
-                    is OutgoingControlResult.RemoteFailure -> return@launch
+                when (val control = outgoing.handleControl(channel.receive())) {
+                    OutgoingControlResult.ReceiverCommitted -> {
+                        receiverCommit.complete(Unit)
+                        return@launch
+                    }
+                    is OutgoingControlResult.RemoteCancel -> {
+                        receiverCommit.completeExceptionally(
+                            IllegalStateException("Receiver cancelled before vault commit: ${control.reason}"),
+                        )
+                        return@launch
+                    }
+                    is OutgoingControlResult.RemoteFailure -> {
+                        receiverCommit.completeExceptionally(
+                            IllegalStateException("Receiver failed before vault commit: ${control.failure.code}"),
+                        )
+                        return@launch
+                    }
                     is OutgoingControlResult.Ignored -> Unit
                     OutgoingControlResult.Accepted,
-                    is OutgoingControlResult.Rejected ->
-                        throw IllegalStateException("Unexpected terminal OFFER response after ACCEPT")
+                    is OutgoingControlResult.Rejected -> {
+                        receiverCommit.completeExceptionally(
+                            IllegalStateException("Unexpected terminal OFFER response after ACCEPT"),
+                        )
+                        return@launch
+                    }
                 }
             }
         }
         try {
-            outgoing.sendAccepted()
+            val result = outgoing.sendAccepted()
+            VeilShareDiagnostics.share("receiver_commit_wait")
+            try {
+                withTimeout(offerResponseTimeoutMs) { receiverCommit.await() }
+            } catch (_: TimeoutCancellationException) {
+                throw IllegalStateException("Receiver did not confirm vault import in time")
+            }
+            VeilShareDiagnostics.share("receiver_commit_received")
+            result
         } finally {
             controlJob.cancelAndJoin()
         }
