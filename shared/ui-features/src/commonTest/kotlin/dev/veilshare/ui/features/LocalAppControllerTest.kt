@@ -4,6 +4,7 @@ import dev.veilshare.core.model.BlobId
 import dev.veilshare.core.model.LocalPersonaId
 import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.vault.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -220,7 +221,7 @@ class LocalAppControllerTest {
         val runtime = RecordingSharingRuntime()
         val controller = controller(FakeService(LocalStorageState.READY), runtime)
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
-        controller.startSharingReceiver()
+        controller.startSharingReceiver(); advanceUntilIdle()
         assertIs<SharingReceiverState.Waiting>(assertIs<RootState.SharingReceiver>(controller.state.value).state)
 
         runtime.emit(SharingRuntimeEvent.IncomingOffer("Alice", "photo.jpg", 42L)); advanceUntilIdle()
@@ -240,7 +241,7 @@ class LocalAppControllerTest {
         val runtime = RecordingSharingRuntime()
         val controller = controller(FakeService(LocalStorageState.READY), runtime)
         controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
-        controller.startSharingReceiver()
+        controller.startSharingReceiver(); advanceUntilIdle()
         runtime.emit(SharingRuntimeEvent.IncomingOffer("Bob", "archive.bin", 100L)); advanceUntilIdle()
 
         controller.acceptIncomingSharing(); advanceUntilIdle()
@@ -254,6 +255,27 @@ class LocalAppControllerTest {
         assertIs<SharingReceiverState.Completed>(assertIs<RootState.SharingReceiver>(controller.state.value).state)
         controller.finishSharing(); advanceUntilIdle()
         assertIs<RootState.Unlocked>(controller.state.value)
+    }
+
+    @Test fun receiverDoesNotExposeCachedCodeBeforeFreshPresenceIsConfirmed() = runTest {
+        val refreshGate = CompletableDeferred<Unit>()
+        val runtime = RecordingSharingRuntime(
+            activation = SharingRuntimeActivation.Ready(TEST_REFERENCE),
+            refreshActivation = SharingRuntimeActivation.Ready(TEST_REFRESHED_REFERENCE),
+            refreshGate = refreshGate,
+        )
+        val controller = controller(FakeService(LocalStorageState.READY), runtime)
+        controller.initialize(); controller.unlock("1111".toCharArray()); advanceUntilIdle()
+
+        controller.startSharingReceiver()
+        runCurrent()
+        assertIs<RootState.Unlocked>(controller.state.value)
+
+        refreshGate.complete(Unit)
+        advanceUntilIdle()
+        val waiting = assertIs<SharingReceiverState.Waiting>(assertIs<RootState.SharingReceiver>(controller.state.value).state)
+        assertEquals(TEST_REFRESHED_REFERENCE, waiting.referenceCode)
+        assertEquals(1, runtime.refreshCalls)
     }
 
     @Test fun contactCanBeVerifiedBeforeAnyFileTransfer() = runTest {
@@ -327,12 +349,15 @@ class LocalAppControllerTest {
 
 private val TEST_PERSONA = LocalPersonaId("a".repeat(64))
 private val TEST_REFERENCE = ReferenceCode("2345-6789-ABCD-EFGH")
+private val TEST_REFRESHED_REFERENCE = ReferenceCode("JKLM-NPQR-STUV-WXYZ")
 
 private object NoopOpener : VaultFileOpener { override suspend fun open(vault: VaultHandle, file: VaultItem.File) = Unit }
 private class RecordingOpener : VaultFileOpener { var cleanupCalls = 0; override suspend fun open(vault: VaultHandle, file: VaultItem.File) = Unit; override fun cleanup() { cleanupCalls++ } }
 
 private class RecordingSharingRuntime(
     private val activation: SharingRuntimeActivation = SharingRuntimeActivation.Ready(TEST_REFERENCE),
+    private val refreshActivation: SharingRuntimeActivation = activation,
+    private val refreshGate: CompletableDeferred<Unit>? = null,
     private val sendResult: SharingSendResult = SharingSendResult.Completed,
     private val verificationResult: SharingVerificationResult = SharingVerificationResult.Verified,
     private val peerLookupResult: SharingPeerLookupResult = SharingPeerLookupResult.Trusted("Known contact"),
@@ -364,7 +389,8 @@ private class RecordingSharingRuntime(
 
     override suspend fun refreshPresence(): SharingRuntimeActivation {
         refreshCalls++
-        return activation
+        refreshGate?.await()
+        return refreshActivation
     }
 
     override suspend fun inspectPeer(referenceCode: ReferenceCode): SharingPeerLookupResult {
