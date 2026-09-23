@@ -288,6 +288,19 @@ internal class InboundSharingCoordinator(
         try {
             VeilShareDiagnostics.share("offer_accepted", "sessionId=${diagnosticId(inbound.sessionId.value)}")
             inbound.transfer.accept()
+            // Do not leave Compose on the Accept/Reject card while the sender has already
+            // started DATA. Publish an explicit zero-byte receiving state immediately.
+            eventSink(
+                SharingRuntimeEvent.Receiving(
+                    SharingProgress(
+                        bytesTransferred = 0,
+                        totalBytes = inbound.transfer.offer.sizeBytes,
+                        currentChunk = 0,
+                        totalChunks = inbound.transfer.offer.totalChunks,
+                    ),
+                ),
+            )
+            VeilShareDiagnostics.share("receive_loop_start", "sessionId=${diagnosticId(inbound.sessionId.value)}")
             while (true) {
                 val envelope = withTimeout(INBOUND_IDLE_TIMEOUT_MS) { inbound.channel.receive() }
                 when (val result = inbound.transfer.dispatch(envelope)) {
@@ -303,6 +316,25 @@ internal class InboundSharingCoordinator(
                     IncomingDispatchResult.ReadyToImport -> {
                         VeilShareDiagnostics.share("vault_import_start", "sessionId=${diagnosticId(inbound.sessionId.value)}")
                         inbound.transfer.importIntoVault(inbound.vault)
+                        VeilShareDiagnostics.share("vault_import_complete", "sessionId=${diagnosticId(inbound.sessionId.value)}")
+
+                        // A reverse authenticated COMPLETE is the commit acknowledgement. The
+                        // sender only reports success after receiving it, so a local DATA send
+                        // can no longer masquerade as a successful vault delivery.
+                        val acknowledged = runCatching {
+                            inbound.transfer.acknowledgeImported()
+                            true
+                        }.getOrElse { failure ->
+                            VeilShareDiagnostics.share(
+                                "vault_commit_ack_failure",
+                                "sessionId=${diagnosticId(inbound.sessionId.value)} errorClass=${failure::class.simpleName ?: "Unknown"}",
+                            )
+                            false
+                        }
+                        if (acknowledged) {
+                            VeilShareDiagnostics.share("vault_commit_ack_sent", "sessionId=${diagnosticId(inbound.sessionId.value)}")
+                        }
+
                         eventSink(
                             SharingRuntimeEvent.Receiving(
                                 SharingProgress(
@@ -337,7 +369,11 @@ internal class InboundSharingCoordinator(
                 finish(inbound)
             }
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            VeilShareDiagnostics.share(
+                "receive_failure",
+                "sessionId=${diagnosticId(inbound.sessionId.value)} errorClass=${failure::class.simpleName ?: "Unknown"}",
+            )
             withContext(NonCancellable) {
                 runCatching { inbound.transfer.cancel("receiver failure") }
                 finish(inbound)
