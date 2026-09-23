@@ -179,12 +179,12 @@ fun EnhancedSenderScreen(state: SharingSenderState, controller: LocalAppControll
                         controller.finishSharing()
                         controller.shareVaultItem(nextId)
                         controller.enterSharingReferenceCode(code)
-                        repeat(40) {
+                        for (attempt in 0 until 40) {
                             controller.startSharingTransfer()
                             val current = controller.state.value
                             val stillPreparing =
                                 current is RootState.SharingSender && current.state is SharingSenderState.Preparing
-                            if (!stillPreparing) return@LaunchedEffect
+                            if (!stillPreparing) break
                             delay(50)
                         }
                     } else if (nextId == null) {
@@ -192,14 +192,17 @@ fun EnhancedSenderScreen(state: SharingSenderState, controller: LocalAppControll
                     }
                 }
             }
-            SharingSenderState.Cancelled -> SharingBatchSession.clear()
+            SharingSenderState.Cancelled,
+            is SharingSenderState.Error -> SharingBatchSession.clear()
             else -> Unit
         }
     }
 
     when (state) {
         is SharingSenderState.Preparing -> EnhancedSenderPreparing(state, contacts, controller)
-        else -> SenderScreen(state, controller)
+        else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            SenderScreen(state, controller)
+        }
     }
 }
 
