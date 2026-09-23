@@ -6,7 +6,6 @@ import dev.veilshare.core.model.OpaqueIds
 import dev.veilshare.core.model.RandomBytesSource
 import dev.veilshare.core.model.ReferenceCodes
 import dev.veilshare.core.model.RegisterRequest
-import dev.veilshare.core.model.UnregisterRequest
 import dev.veilshare.core.platform.KtorSignalingClient
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -17,38 +16,54 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * Opt-in live compatibility probe. Normal unit runs skip network access; CI enables it with
- * VEILSHARE_PRODUCTION_SIGNALING_URL so a client/server wire-format mismatch cannot ship.
+ * VEILSHARE_PRODUCTION_SIGNALING_URL. Two distinct WebSocket clients are intentional: the
+ * production failure this protects against is REGISTER on one connection followed by LOOKUP
+ * from another connection.
  */
 class ProductionSignalingProbeTest {
     @Test
-    fun productionEndpointAcceptsCurrentRegisterLookupAndUnregisterWireFormat() = runBlocking {
+    fun productionEndpointSharesPresenceAcrossIndependentConnections() = runBlocking {
         val endpoint = System.getenv("VEILSHARE_PRODUCTION_SIGNALING_URL")
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: return@runBlocking
-        val entropy = ProbeEntropy((System.nanoTime() and 0xff).toInt())
-        val identity = OpaqueIds.sharingIdentityId(entropy)
-        val referenceCode = ReferenceCodes.generate(entropy)
+
+        val receiverEntropy = ProbeEntropy((System.nanoTime() and 0xff).toInt())
+        val senderEntropy = ProbeEntropy(((System.nanoTime() ushr 8) and 0xff).toInt() + 97)
+        val receiverIdentity = OpaqueIds.sharingIdentityId(receiverEntropy)
+        val senderIdentity = OpaqueIds.sharingIdentityId(senderEntropy)
+        val referenceCode = ReferenceCodes.generate(receiverEntropy)
         val http = HttpClient(CIO) { install(WebSockets) }
-        val client = KtorSignalingClient(
+        val receiver = KtorSignalingClient(
             httpClient = http,
             endpointUrl = endpoint,
-            random = entropy,
+            random = receiverEntropy,
             timeoutMillis = 12_000,
-            registrationKeepAliveMillis = 30_000,
         )
-        try {
-            client.connect()
-            client.register(RegisterRequest(identity, referenceCode, "ci-production-probe-public-key"))
-            val visible = client.lookup(LookupRequest(referenceCode, identity))
-            assertEquals(LookupStatus.FOUND, visible.status)
-            assertEquals(identity, visible.sharingIdentityId)
+        val sender = KtorSignalingClient(
+            httpClient = http,
+            endpointUrl = endpoint,
+            random = senderEntropy,
+            timeoutMillis = 12_000,
+        )
 
-            client.unregister(UnregisterRequest(identity))
-            val removed = client.lookup(LookupRequest(referenceCode, identity))
-            assertEquals(LookupStatus.NOT_FOUND, removed.status)
+        try {
+            receiver.connect()
+            sender.connect()
+            receiver.register(
+                RegisterRequest(
+                    receiverIdentity,
+                    referenceCode,
+                    "ci-production-probe-public-key",
+                ),
+            )
+
+            val visible = sender.lookup(LookupRequest(referenceCode, senderIdentity))
+            assertEquals(LookupStatus.FOUND, visible.status)
+            assertEquals(receiverIdentity, visible.sharingIdentityId)
         } finally {
-            runCatching { client.close() }
+            runCatching { sender.close() }
+            runCatching { receiver.close() }
             http.close()
         }
     }

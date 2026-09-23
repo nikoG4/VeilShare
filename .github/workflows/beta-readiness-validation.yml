@@ -5,6 +5,7 @@ on:
     branches:
       - feature/beta-readiness
       - feature/android-ux-overhaul
+      - fix/sharing-presence-e2e
   workflow_dispatch:
 
 permissions:
@@ -32,11 +33,12 @@ jobs:
       - run: chmod +x gradlew
       - name: Whitespace and patch sanity
         run: git diff --check origin/feature/sharing-ui-polish...HEAD
-      - name: Compile changed application layers
+      - name: Compile application layers and validate signaling
         run: >-
           ./gradlew
           :shared:app:compileDebugKotlinAndroid
           :shared:ui-features:compileDebugKotlinAndroid
+          :server:signaling:test
           --no-daemon --stacktrace
 
   full-linux:

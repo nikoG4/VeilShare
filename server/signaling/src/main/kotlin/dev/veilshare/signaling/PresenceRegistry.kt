@@ -16,16 +16,20 @@ class PresenceRegistry(
     private val clock: SignalingClock,
     private val limits: SignalingLimits = SignalingLimits(),
 ) {
+    // These two maps form one logical routing index. Every public operation is synchronized
+    // on this registry instance so REGISTER/LOOKUP/disconnect cleanup cannot observe or leave
+    // partially-updated state across concurrently handled WebSocket connections.
     private val byReferenceCode = linkedMapOf<ReferenceCode, PresenceEntry>()
     private val byConnection = linkedMapOf<ConnectionId, MutableSet<ReferenceCode>>()
 
+    @Synchronized
     fun register(
         referenceCode: ReferenceCode,
         connectionId: ConnectionId,
         sharingIdentityId: SharingIdentityId,
         sharingPublicKey: String,
     ): PresenceEntry {
-        cleanupExpired()
+        cleanupExpiredLocked()
         require(sharingPublicKey.isNotBlank() && sharingPublicKey.length <= 512)
         val existing = byReferenceCode[referenceCode]
         // REGISTER contains only public identity material. A different live connection must
@@ -52,16 +56,19 @@ class PresenceRegistry(
         return entry
     }
 
+    @Synchronized
     fun lookup(referenceCode: ReferenceCode): PresenceEntry? {
-        cleanupExpired()
+        cleanupExpiredLocked()
         return byReferenceCode[referenceCode]
     }
 
+    @Synchronized
     fun lookupByIdentity(sharingIdentityId: SharingIdentityId): List<PresenceEntry> {
-        cleanupExpired()
+        cleanupExpiredLocked()
         return byReferenceCode.values.filter { it.sharingIdentityId == sharingIdentityId }
     }
 
+    @Synchronized
     fun unregister(referenceCode: ReferenceCode, connectionId: ConnectionId): Boolean {
         val current = byReferenceCode[referenceCode] ?: return false
         if (current.connectionId != connectionId) return false
@@ -71,19 +78,34 @@ class PresenceRegistry(
         return true
     }
 
-    fun unregisterConnection(connectionId: ConnectionId) {
+    @Synchronized
+    fun unregisterConnection(connectionId: ConnectionId): Int {
         val codes = byConnection.remove(connectionId).orEmpty()
+        var removed = 0
         codes.forEach { code ->
-            // A delayed close from an old socket must not erase a newer registration.
+            // A delayed close must never erase a route now owned by another connection.
             if (byReferenceCode[code]?.connectionId == connectionId) {
                 byReferenceCode.remove(code)
+                removed++
             }
         }
+        return removed
     }
 
-    fun cleanupExpired(): Int {
+    @Synchronized
+    fun cleanupExpired(): Int = cleanupExpiredLocked()
+
+    @Synchronized
+    fun size(): Int {
+        cleanupExpiredLocked()
+        return byReferenceCode.size
+    }
+
+    private fun cleanupExpiredLocked(): Int {
         val now = clock.nowMillis()
-        val expired = byReferenceCode.values.filter { it.expiresAtMillis <= now }.map { it.referenceCode }
+        val expired = byReferenceCode.values
+            .filter { it.expiresAtMillis <= now }
+            .map { it.referenceCode }
         expired.forEach { code ->
             val entry = byReferenceCode.remove(code)
             if (entry != null) {
@@ -92,10 +114,5 @@ class PresenceRegistry(
             }
         }
         return expired.size
-    }
-
-    fun size(): Int {
-        cleanupExpired()
-        return byReferenceCode.size
     }
 }
