@@ -22,14 +22,17 @@ class SessionRegistry(
     private val clock: SignalingClock,
     private val limits: SignalingLimits = SignalingLimits(),
 ) {
+    // Session state is shared by all WebSocket handlers. Keep every compound operation under
+    // the same monitor so create/activate/lookup/connection cleanup remain atomic.
     private val sessions = linkedMapOf<SessionId, RelaySession>()
 
+    @Synchronized
     fun create(
         sessionId: SessionId,
         senderConnectionId: ConnectionId,
         receiverConnectionId: ConnectionId,
     ): RelaySession {
-        cleanupExpired()
+        cleanupExpiredLocked()
         require(sessionId !in sessions) { "Duplicate session" }
         require(sessions.size < limits.maxPendingSessions) { "Session registry full" }
         val now = clock.nowMillis()
@@ -45,20 +48,25 @@ class SessionRegistry(
         return session
     }
 
+    @Synchronized
     fun activate(sessionId: SessionId): RelaySession {
-        val session = requireNotNull(lookup(sessionId)) { "Session not found" }
+        cleanupExpiredLocked()
+        val session = requireNotNull(sessions[sessionId]) { "Session not found" }
         val active = session.copy(state = RelaySessionState.ACTIVE)
         sessions[sessionId] = active
         return active
     }
 
+    @Synchronized
     fun lookup(sessionId: SessionId): RelaySession? {
-        cleanupExpired()
+        cleanupExpiredLocked()
         return sessions[sessionId]
     }
 
+    @Synchronized
     fun close(sessionId: SessionId): Boolean = sessions.remove(sessionId) != null
 
+    @Synchronized
     fun closeConnection(connectionId: ConnectionId): Int {
         val toRemove = sessions.values
             .filter { it.senderConnectionId == connectionId || it.receiverConnectionId == connectionId }
@@ -67,15 +75,21 @@ class SessionRegistry(
         return toRemove.size
     }
 
-    fun cleanupExpired(): Int {
-        val now = clock.nowMillis()
-        val expired = sessions.values.filter { it.expiresAtMillis <= now }.map { it.sessionId }
-        expired.forEach { sessions.remove(it) }
-        return expired.size
+    @Synchronized
+    fun cleanupExpired(): Int = cleanupExpiredLocked()
+
+    @Synchronized
+    fun size(): Int {
+        cleanupExpiredLocked()
+        return sessions.size
     }
 
-    fun size(): Int {
-        cleanupExpired()
-        return sessions.size
+    private fun cleanupExpiredLocked(): Int {
+        val now = clock.nowMillis()
+        val expired = sessions.values
+            .filter { it.expiresAtMillis <= now }
+            .map { it.sessionId }
+        expired.forEach { sessions.remove(it) }
+        return expired.size
     }
 }

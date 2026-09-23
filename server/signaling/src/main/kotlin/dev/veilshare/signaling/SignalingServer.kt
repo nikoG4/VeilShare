@@ -9,6 +9,7 @@ import dev.veilshare.core.model.LookupStatus
 import dev.veilshare.core.model.MessageId
 import dev.veilshare.core.model.MessageType
 import dev.veilshare.core.model.PingMessage
+import dev.veilshare.core.model.ReferenceCode
 import dev.veilshare.core.model.RegisterRequest
 import dev.veilshare.core.model.RelayRequest
 import dev.veilshare.core.model.SignalingEnvelope
@@ -66,6 +67,7 @@ fun Application.signalingModule(state: SignalingServerState = SignalingServerSta
         webSocket("/v1/ws") {
             val connectionId = ConnectionId(UUID.randomUUID().toString())
             state.sockets[connectionId] = this
+            serverLog("connection_open", "conn=${connectionTag(connectionId)} sockets=${state.sockets.size}")
             try {
                 for (frame in incoming) {
                     if (frame !is Frame.Text) {
@@ -84,9 +86,13 @@ fun Application.signalingModule(state: SignalingServerState = SignalingServerSta
                 }
             } catch (_: ClosedReceiveChannelException) {
             } finally {
-                state.presence.unregisterConnection(connectionId)
-                state.sessions.closeConnection(connectionId)
+                val removedPresence = state.presence.unregisterConnection(connectionId)
+                val closedSessions = state.sessions.closeConnection(connectionId)
                 state.sockets.remove(connectionId)
+                serverLog(
+                    "connection_close",
+                    "conn=${connectionTag(connectionId)} removedPresence=$removedPresence closedSessions=$closedSessions presenceSize=${state.presence.size()} sockets=${state.sockets.size}",
+                )
             }
         }
     }
@@ -132,6 +138,10 @@ private suspend fun DefaultWebSocketServerSession.handleRegister(
         sharingIdentityId = request.sharingIdentityId,
         sharingPublicKey = request.sharingPublicKey,
     )
+    serverLog(
+        "presence_register",
+        "conn=${connectionTag(connectionId)} codeFp=${referenceFingerprint(request.referenceCode)} presenceSize=${state.presence.size()}",
+    )
     sendEnvelope(envelope.copy(payload = ByteArray(0)))
 }
 
@@ -144,7 +154,14 @@ private suspend fun DefaultWebSocketServerSession.handleUnregister(
     val owned = state.presence.lookupByIdentity(request.sharingIdentityId)
         .filter { it.connectionId == connectionId }
         .map { it.referenceCode }
-    owned.forEach { state.presence.unregister(it, connectionId) }
+    var removed = 0
+    owned.forEach {
+        if (state.presence.unregister(it, connectionId)) removed++
+    }
+    serverLog(
+        "presence_unregister",
+        "conn=${connectionTag(connectionId)} removed=$removed presenceSize=${state.presence.size()}",
+    )
     sendEnvelope(envelope.copy(payload = ByteArray(0)))
 }
 
@@ -159,6 +176,10 @@ private suspend fun DefaultWebSocketServerSession.handleLookup(
     }
     val request = decodePayload<LookupRequest>(envelope)
     val entry = state.presence.lookup(request.referenceCode)
+    serverLog(
+        "presence_lookup",
+        "conn=${connectionTag(connectionId)} codeFp=${referenceFingerprint(request.referenceCode)} found=${entry != null} presenceSize=${state.presence.size()}",
+    )
     val response = if (entry == null) {
         LookupResponse(status = LookupStatus.NOT_FOUND)
     } else {
@@ -221,4 +242,19 @@ private suspend fun DefaultWebSocketServerSession.sendError(
             payload = json.encodeToString(error).encodeToByteArray(),
         ),
     )
+}
+
+private fun serverLog(event: String, details: String) {
+    println("VeilShareServer event=$event $details")
+}
+
+private fun connectionTag(connectionId: ConnectionId): String = connectionId.value.take(8)
+
+private fun referenceFingerprint(referenceCode: ReferenceCode): String {
+    var hash = 0x811c9dc5.toInt()
+    for (byte in referenceCode.value.encodeToByteArray()) {
+        hash = hash xor (byte.toInt() and 0xff)
+        hash *= 0x01000193
+    }
+    return hash.toUInt().toString(16).padStart(8, '0')
 }
