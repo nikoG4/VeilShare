@@ -8,6 +8,8 @@ import dev.veilshare.core.identity.SharingPublicIdentity
 import dev.veilshare.core.identity.SharingRegistrationFactory
 import dev.veilshare.core.model.UnregisterRequest
 import dev.veilshare.core.platform.SignalingClient
+import dev.veilshare.core.platform.VeilShareDiagnostics
+import dev.veilshare.core.platform.diagnosticFingerprint
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -40,6 +42,10 @@ class SharingPresenceLifecycle(
             val identity = handle.publicIdentity
             val current = presence.getOrCreate(contextId)
             signalingClient.register(SharingRegistrationFactory.create(identity, current.referenceCode))
+            VeilShareDiagnostics.share(
+                "presence_register",
+                "codeFp=${diagnosticFingerprint(current.referenceCode.value)}",
+            )
             ActiveSharingPresence(identity, current)
         } finally {
             handle.close()
@@ -58,6 +64,10 @@ class SharingPresenceLifecycle(
 
             val replacement = presence.rotate(contextId)
             signalingClient.register(SharingRegistrationFactory.create(identity, replacement.referenceCode))
+            VeilShareDiagnostics.share(
+                "presence_register",
+                "codeFp=${diagnosticFingerprint(replacement.referenceCode.value)} rotated=true",
+            )
             ActiveSharingPresence(identity, replacement)
         } finally {
             handle.close()
