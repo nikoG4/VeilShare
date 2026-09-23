@@ -25,8 +25,10 @@ fun AppUiHost(
             Box(Modifier.fillMaxSize()) {
                 when (root) {
                     is RootState.Locked -> QuickUnlockScreen(root, controller)
+                    is RootState.SharingSender -> EnhancedSenderScreen(root.state, controller)
                     else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview)
                 }
+                BatchShareLauncherOverlay(root, controller)
                 VaultPhotoViewerOverlay(controller, mediaPreview)
                 ReceiverCodeActionsOverlay(root)
             }
