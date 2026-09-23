@@ -4,11 +4,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -173,15 +173,20 @@ fun EnhancedSenderScreen(state: SharingSenderState, controller: LocalAppControll
                     val nextId = SharingBatchSession.takeNext()
                     val code = SharingBatchSession.referenceCode
                     if (nextId != null && !code.isNullOrBlank()) {
-                        // LocalAppController publishes Completed just before its send job exits.
-                        // Give that finally block a chance to release the job before starting the
-                        // next authenticated file transfer.
-                        delay(120)
+                        // Completed is published just before LocalAppController releases its
+                        // previous sharingJob. Move to the next item immediately, then retry the
+                        // public start action for a bounded period while that old job finishes.
                         controller.finishSharing()
                         controller.shareVaultItem(nextId)
                         controller.enterSharingReferenceCode(code)
-                        delay(20)
-                        controller.startSharingTransfer()
+                        repeat(40) {
+                            controller.startSharingTransfer()
+                            val current = controller.state.value
+                            val stillPreparing =
+                                current is RootState.SharingSender && current.state is SharingSenderState.Preparing
+                            if (!stillPreparing) return@LaunchedEffect
+                            delay(50)
+                        }
                     } else if (nextId == null) {
                         SharingBatchSession.clear()
                     }
@@ -224,7 +229,13 @@ private fun EnhancedSenderPreparing(
                     ) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("${SharingBatchSession.totalFiles} archivos seleccionados", fontWeight = FontWeight.SemiBold)
-                            if (selectedFile.isNotBlank()) Text("Primero: $selectedFile", style = MaterialTheme.typography.bodySmall)
+                            if (SharingBatchSession.completedFiles > 0) {
+                                Text(
+                                    "${SharingBatchSession.completedFiles} de ${SharingBatchSession.totalFiles} enviados",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            if (selectedFile.isNotBlank()) Text("Actual: $selectedFile", style = MaterialTheme.typography.bodySmall)
                             Text(
                                 "Se enviarán al mismo destinatario, uno tras otro y cada uno conservará su nombre.",
                                 style = MaterialTheme.typography.bodySmall,
