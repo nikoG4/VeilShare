@@ -4,6 +4,7 @@ import dev.veilshare.core.model.FileId
 import dev.veilshare.core.model.SignalingEnvelope
 import dev.veilshare.core.model.TransferAccept
 import dev.veilshare.core.model.TransferCancel
+import dev.veilshare.core.model.TransferComplete
 import dev.veilshare.core.model.TransferData
 import dev.veilshare.core.model.TransferFailure
 import dev.veilshare.core.model.TransferFailureCode
@@ -45,6 +46,11 @@ enum class IncomingTransferState {
 
 sealed interface OutgoingControlResult {
     data object Accepted : OutgoingControlResult
+    /**
+     * Reverse COMPLETE emitted by the receiver only after the authenticated file has been
+     * committed through VaultHandle.import(). The sender must not report success before this.
+     */
+    data object ReceiverCommitted : OutgoingControlResult
     data class Rejected(val reason: String) : OutgoingControlResult
     data class RemoteCancel(val reason: String) : OutgoingControlResult
     data class RemoteFailure(val failure: TransferFailure) : OutgoingControlResult
@@ -161,6 +167,12 @@ class OutgoingSharingTransfer(
                     stateValue = OutgoingTransferState.ACCEPTED
                 }
                 OutgoingControlResult.Accepted
+            }
+            is DecodedPeerMessage.Complete -> {
+                require(message.value.totalChunks == offer.totalChunks) {
+                    "Receiver commit totalChunks does not match OFFER"
+                }
+                OutgoingControlResult.ReceiverCommitted
             }
             is DecodedPeerMessage.Reject -> {
                 stateMutex.withLock {
@@ -445,6 +457,23 @@ class IncomingSharingTransfer(
             stateValue = IncomingTransferState.FAILED
             throw failure
         }
+    }
+
+    /**
+     * Confirms to the sender that the authenticated transfer is durably represented by the
+     * vault catalog. This is deliberately sent only after importIntoVault() reached COMPLETE.
+     */
+    suspend fun acknowledgeImported() {
+        check(stateValue == IncomingTransferState.COMPLETE) { "Vault import is not complete" }
+        crypto.messenger.send(
+            DecodedPeerMessage.Complete(
+                TransferComplete(
+                    transferIdHash = TransferPlatform.sha256ToHex(transferId.value.encodeToByteArray()),
+                    fileIdHash = TransferPlatform.sha256ToHex(offer.fileId.value.encodeToByteArray()),
+                    totalChunks = offer.totalChunks,
+                ),
+            ),
+        )
     }
 
     suspend fun cancel(reason: String) {
