@@ -109,9 +109,9 @@ Desktop and Android production providers use Bouncy Castle-backed implementation
 | Local vault UI | ✅ | ✅ | 🚧 |
 | Persistent encrypted storage | ✅ | ✅ | 🚧 |
 | Sharing protocol code | ✅ KMP-compatible | ✅ KMP-compatible | 🚧 Native validation pending |
-| Signaling relay | colspan | JVM / Ktor service | |
+| Signaling client | ✅ | ✅ | 🚧 Native validation pending |
 
-The validated product targets today are **Android and Desktop**. An `iosApp/` shell exists in the repository, but iOS is not part of the current Gradle module set and should not be considered release-ready.
+The validated product targets today are **Android and Desktop**. An `iosApp/` shell exists in the repository, but iOS is not part of the current Gradle module set and should not be considered release-ready. The signaling relay itself is a separate JVM/Ktor service.
 
 ## Repository layout
 
