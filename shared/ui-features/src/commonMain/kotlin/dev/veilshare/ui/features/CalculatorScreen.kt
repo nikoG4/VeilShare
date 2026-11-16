@@ -22,22 +22,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.veilshare.ui.design.VeilWindowClass
 
-/** Calculator is the initial public workspace. Authentication remains a separate screen. */
+/** Calculator is the public workspace after initial setup. Authentication is separate. */
 @Composable
 internal fun CalculatorEntryHost(
-    root: RootState,
+    root: RootState.Locked,
     controller: LocalAppController,
-    windowClass: VeilWindowClass,
     entryResetGeneration: Long,
 ) {
     var privateOpen by remember(entryResetGeneration) { mutableStateOf(false) }
-    val busy = when (root) {
-        is RootState.Locked -> root.busy
-        is RootState.FirstRun -> root.busy
-        else -> false
-    }
+    val busy = root.busy
     if (privateOpen) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             TextButton(
@@ -46,17 +40,11 @@ internal fun CalculatorEntryHost(
                 modifier = Modifier.padding(horizontal = 12.dp).testTag("calc_back"),
             ) { Text("‹  Calculadora") }
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                when (root) {
-                    is RootState.Locked -> QuickUnlockScreen(root, controller)
-                    else -> FoundationScreen(controller, windowClass)
-                }
+                QuickUnlockScreen(root, controller)
             }
         }
     } else {
-        CalculatorScreen(
-            firstRun = root is RootState.FirstRun,
-            onOpenPrivate = { privateOpen = true },
-        )
+        CalculatorScreen(onOpenPrivate = { privateOpen = true })
     }
 }
 
@@ -90,7 +78,7 @@ private val Keys = listOf(
 )
 
 @Composable
-internal fun CalculatorScreen(firstRun: Boolean, onOpenPrivate: () -> Unit) {
+internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
     // Do not save this state across process death or the authentication boundary.
     var state by remember { mutableStateOf(CalculatorState()) }
     var appearance by remember { mutableStateOf<Boolean?>(null) }
@@ -143,7 +131,7 @@ internal fun CalculatorScreen(firstRun: Boolean, onOpenPrivate: () -> Unit) {
                                 )
                                 HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text(if (firstRun) "Configurar espacio privado" else "Espacio privado") },
+                                    text = { Text("Espacio privado") },
                                     onClick = {
                                         menuOpen = false
                                         state = CalculatorState()

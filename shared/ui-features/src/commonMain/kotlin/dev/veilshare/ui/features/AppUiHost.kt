@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
@@ -36,7 +37,10 @@ fun AppUiHost(
         CompositionLocalProvider(LocalReferenceCodeQrProvider provides referenceQr) {
             Box(Modifier.fillMaxSize()) {
                 when (root) {
-                    is RootState.Locked, is RootState.FirstRun -> CalculatorEntryHost(root, controller, windowClass, entryResetGeneration)
+                    is RootState.FirstRun -> key(entryResetGeneration) {
+                        FirstRunScreen(root, controller)
+                    }
+                    is RootState.Locked -> CalculatorEntryHost(root, controller, entryResetGeneration)
                     is RootState.SharingSender -> EnhancedSenderScreen(root.state, controller)
                     else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview)
                 }
