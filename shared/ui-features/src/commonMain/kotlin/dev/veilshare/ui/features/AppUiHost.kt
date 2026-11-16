@@ -35,7 +35,7 @@ fun AppUiHost(
         CompositionLocalProvider(LocalReferenceCodeQrProvider provides referenceQr) {
             Box(Modifier.fillMaxSize()) {
                 when (root) {
-                    is RootState.Locked -> QuickUnlockScreen(root, controller)
+                    is RootState.Locked, is RootState.FirstRun -> CalculatorEntryHost(root, controller, windowClass)
                     is RootState.SharingSender -> EnhancedSenderScreen(root.state, controller)
                     else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview)
                 }
