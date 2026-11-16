@@ -1,0 +1,54 @@
+name: Calc Product Validation
+on:
+  pull_request:
+    branches:
+      - fix/sharing-recovery-hardening
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: calc-product-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      - name: Calculator and shared UI tests
+        run: ./gradlew :shared:ui-features:desktopTest --no-daemon --stacktrace
+      - name: Compile and package Android
+        run: >-
+          ./gradlew :androidApp:assembleReleaseCheck :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest
+          -Pveilshare.signalingUrl=wss://veilshare-signaling-production.up.railway.app/v1/ws
+          --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calc-android-installable
+          path: androidApp/build/outputs/apk/releaseCheck/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calc-android-debug
+          path: androidApp/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run calculator smoke test on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          script: ./gradlew :androidApp:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.veilshare.android.CalculatorEntrySmokeTest --no-daemon --stacktrace
