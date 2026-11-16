@@ -1,6 +1,7 @@
 package dev.veilshare.ui.features
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -44,7 +45,13 @@ internal fun CalculatorEntryHost(
             }
         }
     } else {
-        CalculatorScreen(onOpenPrivate = { privateOpen = true })
+        key(entryResetGeneration) {
+            CalculatorScreen(
+                busy = busy,
+                onUnlock = { controller.unlock(it) },
+                onLegacyAccess = { if (!busy) privateOpen = true },
+            )
+        }
     }
 }
 
@@ -77,10 +84,26 @@ private val Keys = listOf(
     listOf("⌫", "0", ".", "="),
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
+internal fun CalculatorScreen(
+    busy: Boolean,
+    onUnlock: (CharArray) -> Unit,
+    onLegacyAccess: () -> Unit,
+) {
     // Do not save this state across process death or the authentication boundary.
-    var state by remember { mutableStateOf(CalculatorState()) }
+    var input by remember { mutableStateOf(CalculatorInput()) }
+    val state = input.calculation
+    fun onKey(key: String) {
+        if (busy) return
+        val credential = input.credentialFor(key)
+        if (credential != null) {
+            input = input.afterCredentialSubmission()
+            onUnlock(credential)
+        } else {
+            input = input.press(key)
+        }
+    }
     var appearance by remember { mutableStateOf<Boolean?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
@@ -94,7 +117,7 @@ internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
         onSurfaceVariant = p.secondary, background = p.background, onBackground = p.primary,
     )
     MaterialTheme(colorScheme = scheme) {
-        Surface(color = p.background, modifier = Modifier.fillMaxSize().testTag("calculator_screen")) {
+        Surface(color = p.background, modifier = Modifier.fillMaxSize().testTag(if (busy) "calculator_busy" else "calculator_screen")) {
             BoxWithConstraints(
                 Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp),
                 contentAlignment = Alignment.Center,
@@ -108,7 +131,18 @@ internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
                 ) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("Calc", color = p.primary, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Calc", color = p.primary, fontSize = 28.sp, fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.testTag("calc_title").combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        if (!busy) {
+                                            input = CalculatorInput()
+                                            onLegacyAccess()
+                                        }
+                                    },
+                                ),
+                            )
                             Text("Calculadora", color = p.secondary, fontSize = 13.sp)
                         }
                         TextButton(
@@ -129,27 +163,17 @@ internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
                                     text = { Text("Tema del sistema") },
                                     onClick = { appearance = null; menuOpen = false },
                                 )
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("Espacio privado") },
-                                    onClick = {
-                                        menuOpen = false
-                                        state = CalculatorState()
-                                        onOpenPrivate()
-                                    },
-                                    modifier = Modifier.testTag("calc_private"),
-                                )
                             }
                         }
                     }
                     if (wide) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
-                            CalcDisplay(state, p, Modifier.weight(1f).heightIn(min = 220.dp))
-                            CalcKeypad(p, keyHeight, { state = state.press(it) }, Modifier.weight(1f))
+                            CalcDisplay(state, input.displayDigits, p, Modifier.weight(1f).heightIn(min = 220.dp))
+                            CalcKeypad(p, keyHeight, ::onKey, Modifier.weight(1f))
                         }
                     } else {
-                        CalcDisplay(state, p, Modifier.fillMaxWidth().heightIn(min = 146.dp))
-                        CalcKeypad(p, keyHeight, { state = state.press(it) }, Modifier.fillMaxWidth())
+                        CalcDisplay(state, input.displayDigits, p, Modifier.fillMaxWidth().heightIn(min = 146.dp))
+                        CalcKeypad(p, keyHeight, ::onKey, Modifier.fillMaxWidth())
                     }
                 }
             }
@@ -167,7 +191,7 @@ internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
                             items(state.history) { item ->
                                 TextButton(
                                     modifier = Modifier.fillMaxWidth(),
-                                    onClick = { state = state.recall(item.result); historyOpen = false },
+                                    onClick = { input = input.recall(item.result); historyOpen = false },
                                 ) {
                                     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
                                         Text(item.expression, color = p.secondary, textAlign = TextAlign.End)
@@ -182,7 +206,7 @@ internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
                 confirmButton = { TextButton(onClick = { historyOpen = false }) { Text("Cerrar") } },
                 dismissButton = {
                     if (state.history.isNotEmpty()) {
-                        TextButton(onClick = { state = state.copy(history = emptyList()) }) { Text("Borrar todo") }
+                        TextButton(onClick = { input = input.withHistory(emptyList()) }) { Text("Borrar todo") }
                     }
                 },
             )
@@ -191,7 +215,9 @@ internal fun CalculatorScreen(onOpenPrivate: () -> Unit) {
 }
 
 @Composable
-private fun CalcDisplay(state: CalculatorState, p: CalcPalette, modifier: Modifier) {
+private fun CalcDisplay(state: CalculatorState, rawDigits: String?, p: CalcPalette, modifier: Modifier) {
+    val display = rawDigits ?: state.display
+    val expression = rawDigits ?: state.expression
     Surface(modifier, shape = RoundedCornerShape(28.dp), color = p.display) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 20.dp),
@@ -199,13 +225,13 @@ private fun CalcDisplay(state: CalculatorState, p: CalcPalette, modifier: Modifi
             horizontalAlignment = Alignment.End,
         ) {
             Text(
-                if (state.expression == "0") " " else state.expression,
+                if (expression == "0") " " else expression,
                 color = p.secondary, fontSize = 17.sp, maxLines = 2,
                 overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End,
                 modifier = Modifier.fillMaxWidth().testTag("calc_expression"),
             )
             Spacer(Modifier.height(10.dp))
-            val length = state.display.length
+            val length = display.length
             val resultSize = when {
                 length > 18 -> 25.sp
                 length > 13 -> 32.sp
@@ -213,7 +239,7 @@ private fun CalcDisplay(state: CalculatorState, p: CalcPalette, modifier: Modifi
                 else -> 56.sp
             }
             Text(
-                state.display, color = if (state.error == null) p.primary else MaterialTheme.colorScheme.error,
+                display, color = if (state.error == null) p.primary else MaterialTheme.colorScheme.error,
                 fontSize = resultSize, fontWeight = FontWeight.Light, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End,
                 modifier = Modifier.fillMaxWidth().testTag("calc_display"),

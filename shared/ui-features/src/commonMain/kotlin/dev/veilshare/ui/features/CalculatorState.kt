@@ -98,3 +98,42 @@ private fun format(value: Double): String {
     val rounded = if (scale.isFinite() && scale != 0.0 && (value * scale).isFinite()) round(value * scale) / scale else value
     return rounded.toString().removeSuffix(".0").replace(".0E", "E")
 }
+
+
+/** Direct keypad input is deliberately separate from the arithmetic/history engine.
+ * Only freshly typed digits can be submitted as a credential, never a computed result.
+ */
+internal class CalculatorInput(
+    val calculation: CalculatorState = CalculatorState(),
+    private val directDigits: String? = "",
+) {
+    val displayDigits: String? get() = directDigits?.takeIf { it.isNotEmpty() }
+
+    fun credentialFor(key: String): CharArray? =
+        directDigits?.takeIf { key == "=" && it.length in 4..16 }?.toCharArray()
+
+    fun afterCredentialSubmission(): CalculatorInput =
+        CalculatorInput(CalculatorState(history = calculation.history))
+
+    fun withHistory(history: List<Calculation>): CalculatorInput =
+        CalculatorInput(calculation.copy(history = history), directDigits)
+
+    fun recall(result: String): CalculatorInput =
+        CalculatorInput(calculation.recall(result), null)
+
+    fun press(key: String): CalculatorInput {
+        val digit = key.length == 1 && key[0] in '0'..'9'
+        val nextDigits = when {
+            key == "AC" -> ""
+            key == "⌫" && (calculation.completed || calculation.error != null) -> ""
+            key == "⌫" -> directDigits?.dropLast(1)
+            digit && (calculation.completed || calculation.error != null) -> key
+            digit -> directDigits?.let { if (it.length < 16) it + key else null }
+            else -> null
+        }
+        return CalculatorInput(calculation.press(key), nextDigits)
+    }
+}
+
+internal fun isCalculatorPin(credential: CharArray): Boolean =
+    credential.size in 4..16 && credential.all { it in '0'..'9' }

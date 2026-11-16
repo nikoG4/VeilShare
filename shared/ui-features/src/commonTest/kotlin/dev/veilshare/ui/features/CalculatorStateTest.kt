@@ -41,6 +41,41 @@ class CalculatorStateTest {
         assertEquals("5", state.recall("5").display)
     }
 
+    @Test fun directPinPreservesLeadingZerosAndDoesNotEnterHistory() {
+        var input = CalculatorInput()
+        for (key in "001234") input = input.press(key.toString())
+        assertEquals("001234", input.displayDigits)
+        assertEquals("001234", input.credentialFor("=")?.concatToString())
+        input = input.afterCredentialSubmission()
+        assertEquals("0", input.calculation.display)
+        assertEquals(emptyList(), input.calculation.history)
+        assertNull(input.credentialFor("="))
+    }
+
+    @Test fun calculatedValuesAndEditedExpressionsCannotAuthenticate() {
+        var input = CalculatorInput()
+        for (key in listOf("1","0","0","0","+","2","3","4")) input = input.press(key)
+        assertNull(input.credentialFor("="))
+        input = input.press("=")
+        assertEquals("1234", input.calculation.display)
+        assertNull(input.credentialFor("="))
+        input = input.recall("1234")
+        assertNull(input.credentialFor("="))
+        for (key in listOf("AC","1","2","3","4","%")) input = input.press(key)
+        assertNull(input.credentialFor("="))
+    }
+
+    @Test fun directPinEditingAndLengthLimits() {
+        var input = CalculatorInput()
+        for (key in listOf("0","1","2","3","4","⌫")) input = input.press(key)
+        assertEquals("0123", input.credentialFor("=")?.concatToString())
+        input = input.press("AC")
+        repeat(17) { input = input.press("1") }
+        assertNull(input.credentialFor("="))
+        input = input.press("AC").press("1")
+        assertNull(input.credentialFor("="))
+    }
+
     @Test fun historyBoundedToSession() {
         var state = CalculatorState()
         repeat(30) { state = state.press("1").press("=").press("AC") }

@@ -70,7 +70,7 @@ internal fun FirstRunScreen(state: RootState.FirstRun, controller: LocalAppContr
                     Text(stringResource(Res.string.setup_label), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
                     Text(stringResource(Res.string.setup_title), style = MaterialTheme.typography.titleLarge)
                     Text(stringResource(Res.string.setup_description), style = MaterialTheme.typography.bodyMedium)
-                    Text("Usa códigos diferentes de al menos 4 caracteres. Te recomendamos 6 o más.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Elige dos PIN numéricos diferentes de 4 a 16 dígitos. Recomendamos 6 o más.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     HorizontalDivider()
                     Text(stringResource(Res.string.first_code), style = MaterialTheme.typography.titleSmall)
                     SecretField(stringResource(Res.string.code), primary, { primary = it }, !state.busy, ImeAction.Next, Modifier.testTag("setup_primary"))
@@ -93,7 +93,7 @@ internal fun FirstRunScreen(state: RootState.FirstRun, controller: LocalAppContr
                             Text(stringResource(Res.string.create_spaces))
                         }
                     }
-                    Text("Esta configuración solo aparece al iniciar con un almacenamiento nuevo.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Para abrir un espacio, escribe su PIN en Calc y pulsa =. Mantén pulsado el título Calc si necesitas el método alternativo.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

@@ -64,6 +64,7 @@ class LocalAppController(
         if (state.busy) return
         val error = when {
             primary.size < 4 || alternate.size < 4 -> "Usa códigos de al menos 4 caracteres."
+            !isCalculatorPin(primary) || !isCalculatorPin(alternate) -> "Usa PIN numéricos de 4 a 16 dígitos."
             !primary.contentEquals(confirmation) || !alternate.contentEquals(alternateConfirmation) -> "Las confirmaciones no coinciden."
             primary.contentEquals(alternate) -> "Los códigos deben ser diferentes."
             else -> null
@@ -255,7 +256,7 @@ class LocalAppController(
     }
 
     fun changeCredential(newCredential: CharArray, confirmation: CharArray) {
-        if (!newCredential.contentEquals(confirmation) || newCredential.size < 4) { clear(newCredential, confirmation); setMessage("Verifica el nuevo código y su confirmación."); return }
+        if (!newCredential.contentEquals(confirmation) || !isCalculatorPin(newCredential)) { clear(newCredential, confirmation); setMessage("Verifica el nuevo código y su confirmación."); return }
         val vault = active ?: run { clear(newCredential, confirmation); return }
         scope.launch {
             setOperation(BrowserOperation.Busy("Actualizando código…"))

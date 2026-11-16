@@ -72,7 +72,7 @@ fun QuickUnlockScreen(state: RootState.Locked, controller: LocalAppController) {
                     singleLine = true,
                     enabled = !state.busy,
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submit() }),
                     modifier = Modifier.fillMaxWidth().focusRequester(focus).testTag("unlock_input"),
                     supportingText = { Text("El código no se guarda en texto plano.") },
