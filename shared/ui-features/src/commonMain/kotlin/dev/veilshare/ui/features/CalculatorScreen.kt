@@ -90,6 +90,8 @@ internal fun CalculatorScreen(
     busy: Boolean,
     onUnlock: (CharArray) -> Unit,
     onLegacyAccess: () -> Unit,
+    theme: DecoyTheme = DecoyTheme.System,
+    onTheme: ((DecoyTheme) -> Unit)? = null,
 ) {
     // Do not save this state across process death or the authentication boundary.
     var input by remember { mutableStateOf(CalculatorInput()) }
@@ -107,7 +109,7 @@ internal fun CalculatorScreen(
     var appearance by remember { mutableStateOf<Boolean?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
-    val dark = appearance ?: isSystemInDarkTheme()
+    val dark = if (onTheme != null) when (theme) { DecoyTheme.Dark -> true; DecoyTheme.Light -> false; DecoyTheme.System -> isSystemInDarkTheme() } else appearance ?: isSystemInDarkTheme()
     val p = if (dark) Night else Day
     val scheme = if (dark) darkColorScheme(
         primary = p.accent, onPrimary = p.accentText, surface = p.display, onSurface = p.primary,
@@ -157,11 +159,11 @@ internal fun CalculatorScreen(
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                                 DropdownMenuItem(
                                     text = { Text(if (dark) "Tema claro" else "Tema oscuro") },
-                                    onClick = { appearance = !dark; menuOpen = false },
+                                    onClick = { if (onTheme != null) onTheme(if (dark) DecoyTheme.Light else DecoyTheme.Dark) else appearance = !dark; menuOpen = false },
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Tema del sistema") },
-                                    onClick = { appearance = null; menuOpen = false },
+                                    onClick = { if (onTheme != null) onTheme(DecoyTheme.System) else appearance = null; menuOpen = false },
                                 )
                             }
                         }

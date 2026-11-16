@@ -12,6 +12,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import dev.veilshare.core.vault.LocalVaultService
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.AppUiHost
+import dev.veilshare.ui.features.DecoyStore
+import dev.veilshare.ui.features.MemoryDecoyStore
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.MediaPreviewProvider
@@ -45,6 +47,7 @@ data class AppEnvironment(
     val referenceQr: ReferenceCodeQrProvider = UnavailableReferenceCodeQrProvider,
     val lockSignals: Flow<Unit> = emptyFlow(),
     val externalImportSignals: Flow<Unit> = emptyFlow(),
+    val decoyStore: DecoyStore = MemoryDecoyStore(),
 )
 
 @Composable
@@ -96,5 +99,6 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         mediaPreview = environment.mediaPreview,
         referenceQr = environment.referenceQr,
         entryResetGeneration = entryResetGeneration,
+        decoyStore = environment.decoyStore,
     )
 }

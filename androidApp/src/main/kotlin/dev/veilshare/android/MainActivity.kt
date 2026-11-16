@@ -88,6 +88,7 @@ class MainActivity : FragmentActivity() {
             referenceQr = AndroidReferenceCodeQrProvider(),
             lockSignals = lockSignals,
             externalImportSignals = externalImportSignals.receiveAsFlow(),
+            decoyStore = AndroidDecoyStore(this),
         )
         setContent {
             BoxWithConstraints(

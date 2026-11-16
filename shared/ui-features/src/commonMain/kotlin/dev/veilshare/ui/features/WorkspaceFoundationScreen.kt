@@ -197,6 +197,7 @@ fun WorkspaceFoundationScreen(
     controller: LocalAppController,
     windowClass: VeilWindowClass,
     mediaPreview: MediaPreviewProvider = UnavailableMediaPreviewProvider,
+    onAppearance: () -> Unit = {},
 ) {
     val root by controller.state.collectAsState()
     val unlocked = root as? RootState.Unlocked
@@ -204,7 +205,7 @@ fun WorkspaceFoundationScreen(
         FoundationScreen(controller, windowClass)
         return
     }
-    WorkspaceScreen(unlocked.browser, controller, windowClass, mediaPreview)
+    WorkspaceScreen(unlocked.browser, controller, windowClass, mediaPreview, onAppearance)
 }
 
 @Composable
@@ -213,6 +214,7 @@ private fun WorkspaceScreen(
     controller: LocalAppController,
     windowClass: VeilWindowClass,
     mediaPreview: MediaPreviewProvider,
+    onAppearance: () -> Unit,
 ) {
     var section by remember { mutableStateOf(WorkspaceSection.Files) }
     val contacts by controller.contacts.collectAsState()
@@ -277,6 +279,7 @@ private fun WorkspaceScreen(
                         Text(section.title, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
                         Text(section.subtitle, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
+                    TextButton(onClick = onAppearance, modifier = Modifier.testTag("vault_appearance")) { Text("⚙", style = MaterialTheme.typography.titleLarge) }
                     TextButton(onClick = { controller.lock() }, modifier = Modifier.testTag("vault_lock")) {
                         VaultGlyph(VaultIcon.Lock, tint = colors.primary, dimension = 19.dp)
                         Spacer(Modifier.width(6.dp))
