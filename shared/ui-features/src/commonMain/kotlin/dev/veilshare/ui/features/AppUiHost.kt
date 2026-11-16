@@ -33,7 +33,11 @@ fun AppUiHost(
         if (root is RootState.Unlocked) controller.cancelSharing()
     }
 
-    VeilTheme {
+    val inPrivateWorkspace = root is RootState.Unlocked ||
+        root is RootState.SharingSender ||
+        root is RootState.SharingReceiver ||
+        root is RootState.SharingContactVerification
+    VeilTheme(privateWorkspace = inPrivateWorkspace) {
         CompositionLocalProvider(LocalReferenceCodeQrProvider provides referenceQr) {
             Box(Modifier.fillMaxSize()) {
                 when (root) {
