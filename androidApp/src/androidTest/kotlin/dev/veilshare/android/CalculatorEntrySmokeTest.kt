@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.lifecycle.Lifecycle
 import org.junit.Rule
 import org.junit.Test
 
@@ -24,6 +25,14 @@ class CalculatorEntrySmokeTest {
         compose.onNodeWithTag("calc_menu").performClick()
         compose.onNodeWithTag("calc_private").performClick()
         compose.onNodeWithTag("calc_back").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("calc_display").assertTextEquals("0")
+        compose.onNodeWithTag("calc_menu").performClick()
+        compose.onNodeWithTag("calc_private").performClick()
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.waitUntil(15_000) {
+            compose.onAllNodesWithTag("calculator_screen").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.onNodeWithTag("calc_display").assertTextEquals("0")
     }
 }

@@ -20,6 +20,7 @@ fun AppUiHost(
     windowClass: VeilWindowClass,
     mediaPreview: MediaPreviewProvider,
     referenceQr: ReferenceCodeQrProvider,
+    entryResetGeneration: Long = 0L,
 ) {
     // Sharing V1 keeps transport/presence alive while a vault is unlocked. A failed,
     // cancelled or already-finished transfer must not leave an inbound session behind after
@@ -35,7 +36,7 @@ fun AppUiHost(
         CompositionLocalProvider(LocalReferenceCodeQrProvider provides referenceQr) {
             Box(Modifier.fillMaxSize()) {
                 when (root) {
-                    is RootState.Locked, is RootState.FirstRun -> CalculatorEntryHost(root, controller, windowClass)
+                    is RootState.Locked, is RootState.FirstRun -> CalculatorEntryHost(root, controller, windowClass, entryResetGeneration)
                     is RootState.SharingSender -> EnhancedSenderScreen(root.state, controller)
                     else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview)
                 }

@@ -5,6 +5,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.veilshare.core.vault.LocalVaultService
@@ -60,8 +62,12 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         )
     }
     LaunchedEffect(controller) { controller.initialize() }
+    var entryResetGeneration by remember { mutableStateOf(0L) }
     LaunchedEffect(controller, environment.lockSignals) {
-        environment.lockSignals.collect { controller.lock() }
+        environment.lockSignals.collect {
+            entryResetGeneration++
+            controller.lock()
+        }
     }
     LaunchedEffect(controller, environment.externalImportSignals) {
         environment.externalImportSignals.collect {
@@ -89,5 +95,6 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         windowClass = windowClass,
         mediaPreview = environment.mediaPreview,
         referenceQr = environment.referenceQr,
+        entryResetGeneration = entryResetGeneration,
     )
 }

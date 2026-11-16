@@ -34,6 +34,8 @@ class LocalAppController(
     private val mutableViewerItem = MutableStateFlow<BrowserItem?>(null)
     val viewerItem: StateFlow<BrowserItem?> = mutableViewerItem.asStateFlow()
     private var active: VaultHandle? = null
+    // Invalidates authentication results when the workspace is locked or backgrounded.
+    private var authGeneration = 0L
     private var activePersonaId: dev.veilshare.core.model.LocalPersonaId? = null
     private var importJob: Job? = null
     private var sharingJob: Job? = null
@@ -89,10 +91,16 @@ class LocalAppController(
         }
         if (enrollQuickUnlock && quickUnlock.available) quickUnlock.stageEnrollment(credential)
         else quickUnlock.discardPendingEnrollment()
+        val attempt = ++authGeneration
         mutableState.value = RootState.Locked(busy = true)
         scope.launch {
             try {
-                when (val result = withContext(workDispatcher) { service.unlock(credential) }) {
+                val result = withContext(workDispatcher) { service.unlock(credential) }
+                if (attempt != authGeneration) {
+                    if (result is LocalUnlockResult.Ready) result.vault.close()
+                    return@launch
+                }
+                when (result) {
                     LocalUnlockResult.InvalidCredential -> {
                         quickUnlock.discardPendingEnrollment()
                         mutableState.value = RootState.Locked(error = "No se pudo continuar.")
@@ -107,11 +115,15 @@ class LocalAppController(
                         } else {
                             quickUnlock.discardPendingEnrollment()
                         }
+                        if (attempt != authGeneration) {
+                            result.vault.close()
+                            return@launch
+                        }
                         active?.close()
                         active = result.vault
                         activePersonaId = result.personaId
                         mutableState.value = RootState.Unlocked(browserState(result.vault, null))
-                        ownSharingReferenceCode = result.personaId?.let { personaId ->
+                        val reference = result.personaId?.let { personaId ->
                             try {
                                 when (val activation = withContext(workDispatcher) {
                                     sharingRuntime.activate(personaId, result.vault)
@@ -123,12 +135,17 @@ class LocalAppController(
                                 null
                             }
                         }
-                        refreshContactsAsync()
+                        if (attempt == authGeneration && active === result.vault) {
+                            ownSharingReferenceCode = reference
+                            refreshContactsAsync()
+                        }
                     }
                 }
             } catch (_: Exception) {
-                quickUnlock.discardPendingEnrollment()
-                mutableState.value = RootState.Locked(error = "No se pudo continuar.")
+                if (attempt == authGeneration) {
+                    quickUnlock.discardPendingEnrollment()
+                    mutableState.value = RootState.Locked(error = "No se pudo continuar.")
+                }
             } finally {
                 credential.fill('\u0000')
             }
@@ -138,9 +155,14 @@ class LocalAppController(
     fun unlockWithQuickUnlock() {
         val state = mutableState.value as? RootState.Locked ?: return
         if (state.busy || !quickUnlock.available || !quickUnlock.hasCredential) return
+        val attempt = ++authGeneration
         mutableState.value = RootState.Locked(busy = true)
         scope.launch {
             val credential = try { quickUnlock.requestCredential() } catch (_: Exception) { null }
+            if (attempt != authGeneration) {
+                credential?.fill('\u0000')
+                return@launch
+            }
             if (credential == null) {
                 mutableState.value = RootState.Locked(error = "No se pudo usar el desbloqueo biométrico. Usa tu código.")
                 return@launch
@@ -247,6 +269,7 @@ class LocalAppController(
     }
 
     fun lock(message: String? = null) {
+        ++authGeneration
         importJob?.cancel(); importJob = null
         sharingJob?.cancel(); sharingJob = null
         receiverPresenceJob?.cancel(); receiverPresenceJob = null
@@ -267,7 +290,10 @@ class LocalAppController(
             }
         }
         active?.close(); active = null; opener.cleanup()
-        mutableState.value = RootState.Locked(error = message)
+        mutableState.value = when (val current = mutableState.value) {
+            RootState.Initializing, is RootState.FirstRun, is RootState.Fatal -> current
+            else -> RootState.Locked(error = message)
+        }
     }
 
     override fun close() {

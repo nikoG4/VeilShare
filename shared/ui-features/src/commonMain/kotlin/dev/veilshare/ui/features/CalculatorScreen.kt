@@ -26,8 +26,13 @@ import dev.veilshare.ui.design.VeilWindowClass
 
 /** Calculator is the initial public workspace. Authentication remains a separate screen. */
 @Composable
-internal fun CalculatorEntryHost(root: RootState, controller: LocalAppController, windowClass: VeilWindowClass) {
-    var privateOpen by remember { mutableStateOf(false) }
+internal fun CalculatorEntryHost(
+    root: RootState,
+    controller: LocalAppController,
+    windowClass: VeilWindowClass,
+    entryResetGeneration: Long,
+) {
+    var privateOpen by remember(entryResetGeneration) { mutableStateOf(false) }
     val busy = when (root) {
         is RootState.Locked -> root.busy
         is RootState.FirstRun -> root.busy
