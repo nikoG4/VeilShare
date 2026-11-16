@@ -17,7 +17,7 @@
         tools:node="remove" />
     <application
         android:theme="@style/AppTheme"
-        android:label="Archivos"
+        android:label="Calc"
         android:icon="@drawable/ic_app"
         android:roundIcon="@drawable/ic_app"
         android:allowBackup="false"
