@@ -11,6 +11,9 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
+import dev.veilshare.ui.features.DecoyKind
 import androidx.lifecycle.Lifecycle
 import org.junit.Rule
 import org.junit.Test
@@ -90,6 +93,41 @@ class CalculatorEntrySmokeTest {
         waitForTag("calculator_screen")
         compose.onNodeWithTag("calc_display").assertTextEquals("0")
         compose.onNodeWithTag("initial_setup").assertDoesNotExist()
+
+        // Each discreet entry point must authenticate through the existing controller.
+        // Verify both vault credentials and that the primary-only folder never leaks.
+        // Restore the original launcher selection even when an assertion fails.
+        val store = AndroidDecoyStore(compose.activityRule.scenario.let {
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        })
+        val original = store.preferences.value
+        try {
+            for (kind in listOf(DecoyKind.Calendar, DecoyKind.Notes, DecoyKind.Clock, DecoyKind.Converter)) {
+                org.junit.Assert.assertTrue("Select $kind", store.select(original.copy(kind = kind)))
+                compose.activityRule.scenario.recreate()
+                waitForTag("decoy_" + kind.name.lowercase())
+                compose.onNodeWithTag("unlock_input").assertDoesNotExist()
+                compose.onNodeWithTag("tool_title").performTouchInput { longClick() }
+                waitForTag("unlock_input")
+                compose.onNodeWithTag("unlock_input").performTextInput("520234")
+                compose.onNodeWithTag("unlock_submit").performClick()
+                waitForTag("vault_workspace", 90_000)
+                compose.onNodeWithText("Solo primaria").assertDoesNotExist()
+                compose.onNodeWithTag("vault_lock").performClick()
+                waitForTag("decoy_" + kind.name.lowercase())
+                compose.onNodeWithTag("unlock_input").assertDoesNotExist()
+
+                compose.onNodeWithTag("tool_title").performTouchInput { longClick() }
+                waitForTag("unlock_input")
+                compose.onNodeWithTag("unlock_input").performTextInput("051123")
+                compose.onNodeWithTag("unlock_submit").performClick()
+                waitForText("Solo primaria", 90_000)
+                compose.onNodeWithTag("vault_lock").performClick()
+                waitForTag("decoy_" + kind.name.lowercase())
+            }
+        } finally {
+            org.junit.Assert.assertTrue("Restore original appearance", store.select(original))
+        }
     }
 
     private fun enterPin(pin: String) {
