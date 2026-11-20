@@ -12,7 +12,6 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import javax.crypto.Cipher
-import javax.crypto.CipherInputStream
 import javax.crypto.CipherOutputStream
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -88,11 +87,40 @@ internal object AndroidVaultBackupCodec {
         require(readVersion == version) { "Unsupported backup version" }
         val nonce = ByteArray(12)
         input.readFully(nonce)
+        // Authenticate the COMPLETE ciphertext before trusting any ZIP entry. ZipInputStream
+        // stops at the central directory and otherwise can skip the final GCM tag.
+        // The temporary ZIP stays in private staging and is removed on every exit.
+        val authenticatedZip = File(stage, ".veilshare-authenticated-zip.tmp")
+        try {
+            authenticatedZip.outputStream().buffered().use { plaintext ->
+                val decryptor = cipher(Cipher.DECRYPT_MODE, key, nonce)
+                val buffer = ByteArray(64 * 1024)
+                var encryptedBytes = 0L
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    if (n == 0) continue
+                    encryptedBytes += n
+                    require(encryptedBytes <= maxTotalBytes + 128L * 1024 * 1024) {
+                        "Backup exceeds encrypted size limit"
+                    }
+                    decryptor.update(buffer, 0, n)?.let { plaintext.write(it) }
+                }
+                // doFinal MUST execute: wrong key, truncation and tampering fail here.
+                plaintext.write(decryptor.doFinal())
+            }
+            extractAuthenticatedZip(authenticatedZip, stage)
+        } finally {
+            authenticatedZip.delete()
+        }
+    }
+
+    private fun extractAuthenticatedZip(authenticatedZip: File, stage: File) {
         var count = 0
         var total = 0L
         var endSeen = false
         val names = HashSet<String>()
-        ZipInputStream(CipherInputStream(input, cipher(Cipher.DECRYPT_MODE, key, nonce))).use { zip ->
+        ZipInputStream(authenticatedZip.inputStream().buffered()).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
                 require(++count <= maxEntries + 1)
