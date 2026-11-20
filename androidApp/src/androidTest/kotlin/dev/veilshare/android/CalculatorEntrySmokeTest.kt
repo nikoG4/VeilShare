@@ -65,6 +65,25 @@ class CalculatorEntrySmokeTest {
         enterPin("051123")
         waitForTag("vault_workspace", 90_000)
         compose.onNodeWithTag("vault_empty_files").assertIsDisplayed()
+        // Settings switch must change the Android window flag while authenticated.
+        compose.onNodeWithTag("vault_appearance").performClick()
+        compose.onNodeWithTag("allow_screen_captures").assertIsDisplayed()
+        compose.onNodeWithTag("allow_screen_captures").performClick()
+        compose.waitForIdle()
+        compose.activityRule.scenario.onActivity { activity ->
+            org.junit.Assert.assertEquals(
+                0,
+                activity.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            )
+        }
+        compose.onNodeWithTag("allow_screen_captures").performClick()
+        compose.waitForIdle()
+        compose.activityRule.scenario.onActivity { activity ->
+            org.junit.Assert.assertTrue(
+                activity.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0,
+            )
+        }
+        compose.onNodeWithText("Cancelar").performClick()
         compose.onNodeWithTag("vault_nav_gallery").performClick()
         compose.onNodeWithTag("vault_empty_gallery").assertIsDisplayed()
         compose.onNodeWithTag("vault_nav_contacts").performClick()
