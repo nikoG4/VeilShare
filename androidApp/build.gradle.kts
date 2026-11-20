@@ -29,8 +29,26 @@ android {
         buildConfig = true
     }
     packaging { resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF" }
+    // Stable release signing is opt-in. Never substitute the ephemeral debug key.
+    val releaseStorePath = System.getenv("VEILSHARE_RELEASE_KEYSTORE_PATH")
+    val releaseStorePassword = System.getenv("VEILSHARE_RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = System.getenv("VEILSHARE_RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = System.getenv("VEILSHARE_RELEASE_KEY_PASSWORD")
+    val releaseSigningValues = listOf(releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+    require(releaseSigningValues.all { it.isNullOrBlank() } || releaseSigningValues.all { !it.isNullOrBlank() }) {
+        "Incomplete release signing configuration: provide all four VEILSHARE_RELEASE_* variables"
+    }
+    val stableReleaseSigning = if (releaseSigningValues.all { !it.isNullOrBlank() }) {
+        signingConfigs.create("stableRelease") {
+            storeFile = file(requireNotNull(releaseStorePath))
+            storePassword = requireNotNull(releaseStorePassword)
+            keyAlias = requireNotNull(releaseKeyAlias)
+            keyPassword = requireNotNull(releaseKeyPassword)
+        }
+    } else null
     buildTypes {
         release {
+            if (stableReleaseSigning != null) signingConfig = stableReleaseSigning
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
