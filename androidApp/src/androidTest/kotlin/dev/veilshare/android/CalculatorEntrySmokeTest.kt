@@ -67,7 +67,7 @@ class CalculatorEntrySmokeTest {
         compose.onNodeWithTag("vault_empty_files").assertIsDisplayed()
         // Settings switch must change the Android window flag while authenticated.
         compose.onNodeWithTag("vault_appearance").performClick()
-        compose.onNodeWithTag("allow_screen_captures").assertIsDisplayed()
+        compose.onNodeWithTag("allow_screen_captures").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("allow_screen_captures").performClick()
         compose.waitForIdle()
         compose.activityRule.scenario.onActivity { activity ->
