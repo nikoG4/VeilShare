@@ -49,11 +49,13 @@ internal fun DecoyEntryHost(root: RootState.Locked, controller: LocalAppControll
 }
 
 @Composable
-internal fun DecoySettings(value: DecoyPreferences, store: DecoyStore, onClose: () -> Unit, onChanged: () -> Unit) {
+internal fun DecoySettings(value: DecoyPreferences, store: DecoyStore, screenCapture: ScreenCaptureSettings, onClose: () -> Unit, onChanged: () -> Unit) {
     var kind by remember { mutableStateOf(value.kind) }
     var theme by remember { mutableStateOf(value.theme) }
     var error by remember { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = onClose, title = { Text("Apariencia") }, text = {
+    var captureError by remember { mutableStateOf(false) }
+    val captureAllowed by screenCapture.allowed.collectAsState()
+    AlertDialog(onDismissRequest = onClose, title = { Text("Ajustes") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             DecoyKind.entries.forEach { candidate ->
                 Row { RadioButton(kind == candidate, { kind = candidate }, modifier = Modifier.testTag("select_" + candidate.name)); Text(candidate.label, Modifier.padding(top = 14.dp)) }
@@ -61,6 +63,29 @@ internal fun DecoySettings(value: DecoyPreferences, store: DecoyStore, onClose: 
             HorizontalDivider()
             DecoyTheme.entries.forEach { candidate ->
                 Row { RadioButton(theme == candidate, { theme = candidate }); Text(when(candidate) { DecoyTheme.System -> "Sistema"; DecoyTheme.Dark -> "Oscuro"; DecoyTheme.Light -> "Claro" }, Modifier.padding(top = 14.dp)) }
+            }
+            if (screenCapture.supported) {
+                HorizontalDivider()
+                Text("Privacidad de pantalla", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Permitir capturas de pantalla", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Permite capturas y grabación mientras la bóveda está abierta. " +
+                                "Al bloquear o salir de la aplicación, se vuelve a proteger la pantalla.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = captureAllowed,
+                        onCheckedChange = {
+                            captureError = !screenCapture.setAllowed(it)
+                        },
+                        modifier = Modifier.testTag("allow_screen_captures"),
+                    )
+                }
+                if (captureError) Text("No se pudo guardar el permiso de capturas.", color = MaterialTheme.colorScheme.error)
             }
             if (error) Text("No se pudo guardar la apariencia.", color = MaterialTheme.colorScheme.error)
         }

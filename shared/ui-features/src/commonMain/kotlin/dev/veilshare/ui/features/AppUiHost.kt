@@ -29,6 +29,7 @@ fun AppUiHost(
     referenceQr: ReferenceCodeQrProvider,
     entryResetGeneration: Long = 0L,
     decoyStore: DecoyStore = MemoryDecoyStore(),
+    screenCaptureSettings: ScreenCaptureSettings = UnavailableScreenCaptureSettings,
 ) {
     // Sharing V1 keeps transport/presence alive while a vault is unlocked. A failed,
     // cancelled or already-finished transfer must not leave an inbound session behind after
@@ -59,7 +60,7 @@ fun AppUiHost(
                     else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview, onAppearance = { appearanceOpen = true })
                 }
                 if (root is RootState.Unlocked && appearanceOpen) {
-                    DecoySettings(preferences, decoyStore, onClose = { appearanceOpen = false }, onChanged = { appearanceOpen = false; controller.lock() })
+                    DecoySettings(preferences, decoyStore, screenCaptureSettings, onClose = { appearanceOpen = false }, onChanged = { appearanceOpen = false; controller.lock() })
                 }
                 BatchShareLauncherOverlay(root, controller)
                 VaultPhotoViewerOverlay(controller, mediaPreview)
