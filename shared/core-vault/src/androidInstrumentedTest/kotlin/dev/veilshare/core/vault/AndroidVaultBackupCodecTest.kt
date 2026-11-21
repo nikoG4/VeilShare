@@ -60,20 +60,44 @@ class AndroidVaultBackupCodecTest {
         } finally { work.deleteRecursively() }
     }
 
-    @Test fun exportRejectsSymbolicLinks() {
+    @Test fun exportNeverIncludesSymbolicLinksOrTheirTargets() {
         val work = workspace()
         try {
             val root = File(work, "source").also { assertTrue(it.mkdirs()) }
-            val outside = File(work, "outside").also { it.writeText("secret") }
+            val outside = File(work, "outside").also { it.writeText("secret-outside-root") }
+            File(root, "safe.bin").writeBytes(byteArrayOf(1, 2, 3))
             java.nio.file.Files.createSymbolicLink(File(root, "link").toPath(), outside.toPath())
-            val output = ByteArrayOutputStream()
-            AndroidVaultBackupCodec.export(root, output, AndroidVaultBackupCodec.newRecoveryKey())
-            // A symlink is not followed or serialized.
-            val stage = File(work, "stage").also { assertTrue(it.mkdirs()) }
-            // Export of an empty file set still has the authenticated end marker.
+            val externalDirectory = File(work, "external").also { assertTrue(it.mkdirs()) }
+            File(externalDirectory, "hidden.bin").writeText("hidden")
+            java.nio.file.Files.createSymbolicLink(File(root, "linked-directory").toPath(), externalDirectory.toPath())
+
             val key = AndroidVaultBackupCodec.newRecoveryKey()
-            // The key above differs; the exclusion property is tested by absence of the link in root walk.
-            assertFalse(File(root, "link").isFile && !java.nio.file.Files.isSymbolicLink(File(root, "link").toPath()))
+            val output = ByteArrayOutputStream()
+            AndroidVaultBackupCodec.export(root, output, key)
+            val stage = File(work, "stage").also { assertTrue(it.mkdirs()) }
+            AndroidVaultBackupCodec.importToStage(ByteArrayInputStream(output.toByteArray()), stage, key)
+
+            assertContentEquals(byteArrayOf(1, 2, 3), File(stage, "safe.bin").readBytes())
+            assertFalse(File(stage, "link").exists())
+            assertFalse(File(stage, "linked-directory").exists())
+            assertEquals(listOf("safe.bin"), stage.walkTopDown().filter { it.isFile }.map { it.name }.toList())
+        } finally { work.deleteRecursively() }
+    }
+
+    @Test fun importRejectsSymbolicLinkStageWithoutTouchingItsTarget() {
+        val work = workspace()
+        try {
+            val realStage = File(work, "outside-stage").also { assertTrue(it.mkdirs()) }
+            val linkedStage = File(work, "stage-link")
+            java.nio.file.Files.createSymbolicLink(linkedStage.toPath(), realStage.toPath())
+            assertFails {
+                AndroidVaultBackupCodec.importToStage(
+                    ByteArrayInputStream(byteArrayOf()),
+                    linkedStage,
+                    AndroidVaultBackupCodec.newRecoveryKey()
+                )
+            }
+            assertTrue(realStage.listFiles().isNullOrEmpty())
         } finally { work.deleteRecursively() }
     }
 }
