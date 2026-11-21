@@ -60,27 +60,29 @@ class AndroidVaultBackupCodecTest {
         } finally { work.deleteRecursively() }
     }
 
-    @Test fun exportNeverIncludesSymbolicLinksOrTheirTargets() {
+    @Test fun exportRejectsSymbolicLinksWithoutWritingHeader() {
         val work = workspace()
         try {
             val root = File(work, "source").also { assertTrue(it.mkdirs()) }
             val outside = File(work, "outside").also { it.writeText("secret-outside-root") }
             File(root, "safe.bin").writeBytes(byteArrayOf(1, 2, 3))
-            java.nio.file.Files.createSymbolicLink(File(root, "link").toPath(), outside.toPath())
-            val externalDirectory = File(work, "external").also { assertTrue(it.mkdirs()) }
-            File(externalDirectory, "hidden.bin").writeText("hidden")
-            java.nio.file.Files.createSymbolicLink(File(root, "linked-directory").toPath(), externalDirectory.toPath())
+            val linkedFile = File(root, "link")
+            java.nio.file.Files.createSymbolicLink(linkedFile.toPath(), outside.toPath())
 
             val key = AndroidVaultBackupCodec.newRecoveryKey()
             val output = ByteArrayOutputStream()
-            AndroidVaultBackupCodec.export(root, output, key)
-            val stage = File(work, "stage").also { assertTrue(it.mkdirs()) }
-            AndroidVaultBackupCodec.importToStage(ByteArrayInputStream(output.toByteArray()), stage, key)
+            assertFails { AndroidVaultBackupCodec.export(root, output, key) }
+            assertEquals(0, output.size(), "Symlink wrote a misleading backup header")
+            assertEquals("secret-outside-root", outside.readText())
+            assertTrue(linkedFile.delete())
 
-            assertContentEquals(byteArrayOf(1, 2, 3), File(stage, "safe.bin").readBytes())
-            assertFalse(File(stage, "link").exists())
-            assertFalse(File(stage, "linked-directory").exists())
-            assertEquals(listOf("safe.bin"), stage.walkTopDown().filter { it.isFile }.map { it.name }.toList())
+            val externalDirectory = File(work, "external").also { assertTrue(it.mkdirs()) }
+            File(externalDirectory, "hidden.bin").writeText("hidden")
+            java.nio.file.Files.createSymbolicLink(File(root, "linked-directory").toPath(), externalDirectory.toPath())
+            val second = ByteArrayOutputStream()
+            assertFails { AndroidVaultBackupCodec.export(root, second, key) }
+            assertEquals(0, second.size(), "Directory symlink wrote a backup header")
+            assertEquals("hidden", File(externalDirectory, "hidden.bin").readText())
         } finally { work.deleteRecursively() }
     }
 
