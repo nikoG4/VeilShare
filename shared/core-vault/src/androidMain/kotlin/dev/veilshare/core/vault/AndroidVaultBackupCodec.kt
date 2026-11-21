@@ -45,9 +45,19 @@ internal object AndroidVaultBackupCodec {
 
     fun export(root: File, destination: OutputStream, key: ByteArray) {
         require(root.isDirectory && !java.nio.file.Files.isSymbolicLink(root.toPath()))
-        val files = root.walkTopDown().onEnter { !java.nio.file.Files.isSymbolicLink(it.toPath()) }
-            .filter { it.isFile && !java.nio.file.Files.isSymbolicLink(it.toPath()) }
-            .toList()
+        // A snapshot containing a symlink is unsafe and incomplete: silently
+        // skipping it could produce a backup that appears successful but cannot
+        // restore the original vault. Reject all links before writing a header.
+        val entries = root.walkTopDown().onEnter { entry ->
+            require(!java.nio.file.Files.isSymbolicLink(entry.toPath())) {
+                "Symbolic links are forbidden in vault backups"
+            }
+            true
+        }.toList()
+        require(entries.all { it.isDirectory || it.isFile }) {
+            "Vault backup contains a non-regular filesystem entry"
+        }
+        val files = entries.filter { it.isFile }
         require(files.size <= maxEntries)
         require(files.sumOf { it.length() } <= maxTotalBytes)
         // Validate every entry before opening the destination stream. A malformed
