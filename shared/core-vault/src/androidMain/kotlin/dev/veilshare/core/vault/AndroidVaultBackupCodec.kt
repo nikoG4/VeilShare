@@ -60,6 +60,7 @@ internal object AndroidVaultBackupCodec {
         ZipOutputStream(CipherOutputStream(BufferedOutputStream(destination), cipher(Cipher.ENCRYPT_MODE, key, nonce))).use { zip ->
             for (file in files) {
                 val name = root.toPath().relativize(file.toPath()).toString().replace(File.separatorChar, '/')
+                require(name != ".veilshare-backup-end" && name != ".veilshare-authenticated-zip.tmp")
                 require(name.toByteArray(Charsets.UTF_8).size <= maxNameBytes && file.length() <= maxEntryBytes)
                 zip.putNextEntry(ZipEntry(name))
                 file.inputStream().use { it.copyTo(zip, 64 * 1024) }
@@ -90,7 +91,9 @@ internal object AndroidVaultBackupCodec {
         // Authenticate the COMPLETE ciphertext before trusting any ZIP entry. ZipInputStream
         // stops at the central directory and otherwise can skip the final GCM tag.
         // The temporary ZIP stays in private staging and is removed on every exit.
-        val authenticatedZip = File(stage, ".veilshare-authenticated-zip.tmp")
+        val authenticatedZip = java.nio.file.Files.createTempFile(
+            stage.parentFile.toPath(), ".veilshare-authenticated-", ".zip"
+        ).toFile()
         try {
             authenticatedZip.outputStream().buffered().use { plaintext ->
                 val decryptor = cipher(Cipher.DECRYPT_MODE, key, nonce)
@@ -135,7 +138,7 @@ internal object AndroidVaultBackupCodec {
                     require(zip.nextEntry == null) { "Entries after end marker" }
                     break
                 }
-                require(!endSeen)
+                require(!endSeen && name != ".veilshare-authenticated-zip.tmp")
                 val target = File(stage, name)
                 require(target.canonicalPath.startsWith(stage.canonicalPath + File.separator))
                 require(target.parentFile.mkdirs() || target.parentFile.isDirectory)
