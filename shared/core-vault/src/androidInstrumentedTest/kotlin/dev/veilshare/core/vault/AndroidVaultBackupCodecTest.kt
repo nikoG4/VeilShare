@@ -140,4 +140,19 @@ class AndroidVaultBackupCodecTest {
         } finally { work.deleteRecursively() }
     }
 
+    @Test fun invalidRecoveryKeyDoesNotWriteBackupHeader() {
+        val work = workspace()
+        try {
+            val root = File(work, "source").also { assertTrue(it.mkdirs()) }
+            File(root, "real.bin").writeBytes(byteArrayOf(1, 2, 3))
+            listOf(ByteArray(0), ByteArray(16), ByteArray(31), ByteArray(33)).forEach { invalidKey ->
+                val output = ByteArrayOutputStream()
+                assertFails {
+                    AndroidVaultBackupCodec.export(root, output, invalidKey)
+                }
+                assertEquals(0, output.size(), "Invalid recovery key wrote a partial backup")
+            }
+        } finally { work.deleteRecursively() }
+    }
+
 }
