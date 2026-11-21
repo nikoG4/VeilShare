@@ -50,6 +50,17 @@ internal object AndroidVaultBackupCodec {
             .toList()
         require(files.size <= maxEntries)
         require(files.sumOf { it.length() } <= maxTotalBytes)
+        // Validate every entry before opening the destination stream. A malformed
+        // path or oversized file must never leave a misleading backup header.
+        val rootPath = root.toPath()
+        val names = HashSet<String>()
+        files.forEach { file ->
+            val name = rootPath.relativize(file.toPath()).toString().replace(File.separatorChar, '/')
+            require(name != ".veilshare-backup-end" && name != ".veilshare-authenticated-zip.tmp")
+            require(name.toByteArray(Charsets.UTF_8).size <= maxNameBytes)
+            require(file.length() <= maxEntryBytes)
+            require(names.add(name)) { "Duplicate backup entry" }
+        }
         val nonce = ByteArray(12).also(random::nextBytes)
         // Validate key and initialize AEAD before writing even the public header.
         // A malformed recovery key must not leave a misleading partial backup.
