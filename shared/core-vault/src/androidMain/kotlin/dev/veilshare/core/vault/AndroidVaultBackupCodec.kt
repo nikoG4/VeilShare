@@ -51,13 +51,16 @@ internal object AndroidVaultBackupCodec {
         require(files.size <= maxEntries)
         require(files.sumOf { it.length() } <= maxTotalBytes)
         val nonce = ByteArray(12).also(random::nextBytes)
+        // Validate key and initialize AEAD before writing even the public header.
+        // A malformed recovery key must not leave a misleading partial backup.
+        val encryptor = cipher(Cipher.ENCRYPT_MODE, key, nonce)
         val header = DataOutputStream(destination)
         header.write(magic)
         header.writeByte(version)
         header.write(nonce)
         header.flush()
         // Closing the ZIP stream finalizes the GCM authentication tag.
-        ZipOutputStream(CipherOutputStream(BufferedOutputStream(destination), cipher(Cipher.ENCRYPT_MODE, key, nonce))).use { zip ->
+        ZipOutputStream(CipherOutputStream(BufferedOutputStream(destination), encryptor)).use { zip ->
             for (file in files) {
                 val name = root.toPath().relativize(file.toPath()).toString().replace(File.separatorChar, '/')
                 require(name != ".veilshare-backup-end" && name != ".veilshare-authenticated-zip.tmp")
