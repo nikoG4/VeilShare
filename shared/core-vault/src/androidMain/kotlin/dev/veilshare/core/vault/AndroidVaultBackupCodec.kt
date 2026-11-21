@@ -54,9 +54,10 @@ internal object AndroidVaultBackupCodec {
             }
             true
         }.toList()
-        require(entries.all { it.isDirectory || it.isFile }) {
-            "Vault backup contains a non-regular filesystem entry"
-        }
+        require(entries.all { entry ->
+            !java.nio.file.Files.isSymbolicLink(entry.toPath()) &&
+                (entry.isDirectory || entry.isFile)
+        }) { "Vault backup contains a link or non-regular filesystem entry" }
         val files = entries.filter { it.isFile }
         require(files.size <= maxEntries)
         require(files.sumOf { it.length() } <= maxTotalBytes)
