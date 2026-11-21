@@ -100,4 +100,44 @@ class AndroidVaultBackupCodecTest {
             assertTrue(realStage.listFiles().isNullOrEmpty())
         } finally { work.deleteRecursively() }
     }
+    @Test fun importRejectsNonemptyStageWithoutChangingExistingFiles() {
+        val work = workspace()
+        try {
+            val root = File(work, "source").also { assertTrue(it.mkdirs()) }
+            File(root, "real.bin").writeText("encrypted-source")
+            val key = AndroidVaultBackupCodec.newRecoveryKey()
+            val output = ByteArrayOutputStream()
+            AndroidVaultBackupCodec.export(root, output, key)
+            val stage = File(work, "stage").also { assertTrue(it.mkdirs()) }
+            val existing = File(stage, "keep.bin").also { it.writeText("do-not-touch") }
+            assertFails {
+                AndroidVaultBackupCodec.importToStage(ByteArrayInputStream(output.toByteArray()), stage, key)
+            }
+            assertEquals("do-not-touch", existing.readText())
+            assertEquals(listOf("keep.bin"), stage.listFiles()!!.map { it.name })
+        } finally { work.deleteRecursively() }
+    }
+
+    @Test fun modifiedHeaderAndAppendedCiphertextAreRejectedBeforeExtraction() {
+        val work = workspace()
+        try {
+            val root = File(work, "source").also { assertTrue(it.mkdirs()) }
+            File(root, "decoy.bin").writeBytes(byteArrayOf(4, 5, 6))
+            val key = AndroidVaultBackupCodec.newRecoveryKey()
+            val output = ByteArrayOutputStream()
+            AndroidVaultBackupCodec.export(root, output, key)
+            val good = output.toByteArray()
+            val alteredVersion = good.clone().also { it[8] = 2 }
+            val alteredNonce = good.clone().also { it[9] = (it[9].toInt() xor 1).toByte() }
+            val appended = good + byteArrayOf(1, 2, 3, 4)
+            listOf(alteredVersion, alteredNonce, appended).forEachIndexed { index, bytes ->
+                val stage = File(work, "stage-$index").also { assertTrue(it.mkdirs()) }
+                assertFails {
+                    AndroidVaultBackupCodec.importToStage(ByteArrayInputStream(bytes), stage, key)
+                }
+                assertTrue(stage.listFiles().isNullOrEmpty())
+            }
+        } finally { work.deleteRecursively() }
+    }
+
 }
