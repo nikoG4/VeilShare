@@ -1,0 +1,72 @@
+name: Stable release signing (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Require complete persistent signing configuration
+        env:
+          KEYSTORE_B64: ${{ secrets.VEILSHARE_RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.VEILSHARE_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.VEILSHARE_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.VEILSHARE_RELEASE_KEY_PASSWORD }}
+          EXPECTED_SHA256: ${{ secrets.VEILSHARE_INSTALLED_CERT_SHA256 }}
+        run: |
+          test -n "$KEYSTORE_B64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD" && test -n "$EXPECTED_SHA256" || { echo "::error::Missing signing secret or installed certificate fingerprint"; exit 1; }
+      - name: Materialize temporary keystore and verify certificate identity
+        env:
+          KEYSTORE_B64: ${{ secrets.VEILSHARE_RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.VEILSHARE_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.VEILSHARE_RELEASE_KEY_ALIAS }}
+          EXPECTED_SHA256: ${{ secrets.VEILSHARE_INSTALLED_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/veilshare-release.jks"
+          actual="$(keytool -list -v -keystore "$RUNNER_TEMP/veilshare-release.jks" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          expected="$(printf '%s' "$EXPECTED_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          test -n "$actual" && test "$actual" = "$expected" || { echo "::error::Keystore certificate does not match installed app; refusing release"; exit 1; }
+      - name: Build signed release
+        env:
+          VEILSHARE_RELEASE_STORE_PASSWORD: ${{ secrets.VEILSHARE_RELEASE_STORE_PASSWORD }}
+          VEILSHARE_RELEASE_KEY_ALIAS: ${{ secrets.VEILSHARE_RELEASE_KEY_ALIAS }}
+          VEILSHARE_RELEASE_KEY_PASSWORD: ${{ secrets.VEILSHARE_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export VEILSHARE_RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/veilshare-release.jks"
+          chmod +x gradlew
+          ./gradlew :androidApp:assembleRelease --no-daemon --stacktrace
+      - name: Verify APK signing and application ID
+        env:
+          EXPECTED_SHA256: ${{ secrets.VEILSHARE_INSTALLED_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk="$(find androidApp/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
+          test -n "$apk"
+          apksigner="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)/apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
+          actual="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | head -n1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          expected="$(printf '%s' "$EXPECTED_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          test -n "$actual" && test "$actual" = "$expected"
+          aapt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)/aapt"
+          "$aapt" dump badging "$apk" | grep -q "^package: name='dev.veilshare.android' "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veilshare-signed-release-verified
+          path: androidApp/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/veilshare-release.jks" "$RUNNER_TEMP/apk-signature.txt"
