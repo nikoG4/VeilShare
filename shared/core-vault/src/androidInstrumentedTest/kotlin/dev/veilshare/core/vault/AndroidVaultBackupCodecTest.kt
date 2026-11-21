@@ -155,4 +155,31 @@ class AndroidVaultBackupCodecTest {
         } finally { work.deleteRecursively() }
     }
 
+
+    @Test fun invalidEntryNamesDoNotWriteBackupHeader() {
+        val work = workspace()
+        try {
+            val root = File(work, "source").also { assertTrue(it.mkdirs()) }
+            val key = AndroidVaultBackupCodec.newRecoveryKey()
+            val reserved = File(root, ".veilshare-backup-end")
+            reserved.writeBytes(byteArrayOf(1))
+            val first = ByteArrayOutputStream()
+            assertFails { AndroidVaultBackupCodec.export(root, first, key) }
+            assertEquals(0, first.size(), "Reserved marker wrote a backup header")
+            assertTrue(reserved.delete())
+
+            // This name is legal on common Android filesystems but exceeds the
+            // backup format's UTF-8 path limit when nested.
+            var directory = root
+            repeat(4) { index ->
+                directory = File(directory, "segment-${index}-" + "x".repeat(120))
+                assertTrue(directory.mkdirs())
+            }
+            File(directory, "encrypted.bin").writeBytes(byteArrayOf(2))
+            val second = ByteArrayOutputStream()
+            assertFails { AndroidVaultBackupCodec.export(root, second, key) }
+            assertEquals(0, second.size(), "Overlong path wrote a backup header")
+        } finally { work.deleteRecursively() }
+    }
+
 }
