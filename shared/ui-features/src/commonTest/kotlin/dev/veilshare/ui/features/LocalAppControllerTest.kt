@@ -20,6 +20,8 @@ class LocalAppControllerTest {
         val controller = controller(service)
         controller.initialize()
         assertIs<RootState.FirstRun>(controller.state.value)
+        controller.lock(); advanceUntilIdle()
+        assertIs<RootState.FirstRun>(controller.state.value)
         val p = "1111".toCharArray(); val pc = "1111".toCharArray(); val a = "2222".toCharArray(); val ac = "2222".toCharArray()
         controller.setup(p, pc, a, ac); advanceUntilIdle()
         assertIs<RootState.Locked>(controller.state.value)
@@ -31,6 +33,23 @@ class LocalAppControllerTest {
         val second = assertIs<RootState.Unlocked>(controller.state.value); assertTrue(second.browser.items.any { it.name == "alternate.txt" })
         assertFalse(second.browser.toString().contains("decoy", ignoreCase = true))
         assertFalse(second.browser.toString().contains("real", ignoreCase = true))
+    }
+
+    @Test fun lockDiscardsLateAuthenticationResult() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val service = FakeService(LocalStorageState.READY, gate)
+        val controller = controller(service)
+        controller.initialize()
+        val credential = "1111".toCharArray()
+        controller.unlock(credential)
+        runCurrent()
+        assertTrue(assertIs<RootState.Locked>(controller.state.value).busy)
+        controller.lock()
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertIs<RootState.Locked>(controller.state.value)
+        assertFalse(service.primary.isOpen)
+        assertTrue(credential.all { it == '\u0000' })
     }
 
     @Test fun wrongCredentialIsNeutralAndDoubleSubmitIsIgnored() = runTest {
@@ -448,12 +467,13 @@ private class BytesSharingFile(
     override suspend fun close() { closeCalls++ }
 }
 
-private class FakeService(var storage: LocalStorageState) : LocalVaultService {
+private class FakeService(var storage: LocalStorageState, private val unlockGate: CompletableDeferred<Unit>? = null) : LocalVaultService {
     val primary = FakeVault("primary.txt"); val alternate = FakeVault("alternate.txt"); var unlockCalls = 0
     override suspend fun storageState() = storage
     override suspend fun createPair(primary: CharArray, alternate: CharArray) { storage = LocalStorageState.READY }
     override suspend fun unlock(credential: CharArray): LocalUnlockResult {
         unlockCalls++
+        unlockGate?.await()
         return when (credential.concatToString()) {
             "1111" -> LocalUnlockResult.Ready(primary, TEST_PERSONA)
             "2222" -> LocalUnlockResult.Ready(alternate, LocalPersonaId("b".repeat(64)))

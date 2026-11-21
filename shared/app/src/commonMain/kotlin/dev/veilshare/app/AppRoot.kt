@@ -5,17 +5,24 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import dev.veilshare.core.vault.LocalVaultService
 import dev.veilshare.ui.design.VeilWindowClass
 import dev.veilshare.ui.features.AppUiHost
+import dev.veilshare.ui.features.DecoyStore
+import dev.veilshare.ui.features.MemoryDecoyStore
 import dev.veilshare.ui.features.LocalAppController
 import dev.veilshare.ui.features.LocalFilePicker
 import dev.veilshare.ui.features.MediaPreviewProvider
 import dev.veilshare.ui.features.QuickUnlockProvider
 import dev.veilshare.ui.features.ReferenceCodeQrProvider
 import dev.veilshare.ui.features.RootState
+import dev.veilshare.ui.features.ScreenCaptureSettings
+import dev.veilshare.ui.features.UnavailableScreenCaptureSettings
 import dev.veilshare.ui.features.SharingFilePicker
 import dev.veilshare.ui.features.SharingPickedFile
 import dev.veilshare.ui.features.SharingRuntime
@@ -43,6 +50,8 @@ data class AppEnvironment(
     val referenceQr: ReferenceCodeQrProvider = UnavailableReferenceCodeQrProvider,
     val lockSignals: Flow<Unit> = emptyFlow(),
     val externalImportSignals: Flow<Unit> = emptyFlow(),
+    val decoyStore: DecoyStore = MemoryDecoyStore(),
+    val screenCaptureSettings: ScreenCaptureSettings = UnavailableScreenCaptureSettings,
 )
 
 @Composable
@@ -60,8 +69,12 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         )
     }
     LaunchedEffect(controller) { controller.initialize() }
+    var entryResetGeneration by remember { mutableStateOf(0L) }
     LaunchedEffect(controller, environment.lockSignals) {
-        environment.lockSignals.collect { controller.lock() }
+        environment.lockSignals.collect {
+            entryResetGeneration++
+            controller.lock()
+        }
     }
     LaunchedEffect(controller, environment.externalImportSignals) {
         environment.externalImportSignals.collect {
@@ -77,6 +90,15 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
     }
 
     val root by controller.state.collectAsState()
+    // Reapply privacy on every authentication boundary; a stored preference cannot unlock a window.
+    SideEffect {
+        environment.screenCaptureSettings.onPrivateSessionChanged(
+            root is RootState.Unlocked ||
+                root is RootState.SharingSender ||
+                root is RootState.SharingReceiver ||
+                root is RootState.SharingContactVerification,
+        )
+    }
     LaunchedEffect(root) {
         if (root is RootState.Locked || root is RootState.Fatal || root is RootState.FirstRun) {
             environment.mediaPreview.clear()
@@ -89,5 +111,8 @@ fun AppRoot(environment: AppEnvironment, windowClass: VeilWindowClass) {
         windowClass = windowClass,
         mediaPreview = environment.mediaPreview,
         referenceQr = environment.referenceQr,
+        entryResetGeneration = entryResetGeneration,
+        decoyStore = environment.decoyStore,
+        screenCaptureSettings = environment.screenCaptureSettings,
     )
 }

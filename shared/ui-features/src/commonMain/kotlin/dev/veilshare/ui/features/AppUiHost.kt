@@ -5,6 +5,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
+import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Modifier
 import dev.veilshare.ui.design.VeilTheme
 import dev.veilshare.ui.design.VeilWindowClass
@@ -20,6 +27,9 @@ fun AppUiHost(
     windowClass: VeilWindowClass,
     mediaPreview: MediaPreviewProvider,
     referenceQr: ReferenceCodeQrProvider,
+    entryResetGeneration: Long = 0L,
+    decoyStore: DecoyStore = MemoryDecoyStore(),
+    screenCaptureSettings: ScreenCaptureSettings = UnavailableScreenCaptureSettings,
 ) {
     // Sharing V1 keeps transport/presence alive while a vault is unlocked. A failed,
     // cancelled or already-finished transfer must not leave an inbound session behind after
@@ -31,13 +41,26 @@ fun AppUiHost(
         if (root is RootState.Unlocked) controller.cancelSharing()
     }
 
-    VeilTheme {
+    val inPrivateWorkspace = root is RootState.Unlocked ||
+        root is RootState.SharingSender ||
+        root is RootState.SharingReceiver ||
+        root is RootState.SharingContactVerification
+    val preferences by decoyStore.preferences.collectAsState()
+    var appearanceOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(root is RootState.Unlocked) { if (root !is RootState.Unlocked) appearanceOpen = false }
+    VeilTheme(privateWorkspace = inPrivateWorkspace) {
         CompositionLocalProvider(LocalReferenceCodeQrProvider provides referenceQr) {
             Box(Modifier.fillMaxSize()) {
                 when (root) {
-                    is RootState.Locked -> QuickUnlockScreen(root, controller)
+                    is RootState.FirstRun -> key(entryResetGeneration) {
+                        FirstRunScreen(root, controller)
+                    }
+                    is RootState.Locked -> DecoyEntryHost(root, controller, entryResetGeneration, preferences, decoyStore)
                     is RootState.SharingSender -> EnhancedSenderScreen(root.state, controller)
-                    else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview)
+                    else -> WorkspaceFoundationScreen(controller, windowClass, mediaPreview, onAppearance = { appearanceOpen = true })
+                }
+                if (root is RootState.Unlocked && appearanceOpen) {
+                    DecoySettings(preferences, decoyStore, screenCaptureSettings, onClose = { appearanceOpen = false }, onChanged = { appearanceOpen = false; controller.lock() })
                 }
                 BatchShareLauncherOverlay(root, controller)
                 VaultPhotoViewerOverlay(controller, mediaPreview)
