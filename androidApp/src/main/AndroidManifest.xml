@@ -17,7 +17,7 @@
         tools:node="remove" />
     <application
         android:theme="@style/AppTheme"
-        android:label="Archivos"
+        android:label="Calc"
         android:icon="@drawable/ic_app"
         android:roundIcon="@drawable/ic_app"
         android:allowBackup="false"
@@ -26,15 +26,41 @@
         android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+        <activity-alias android:name=".LauncherCalc" android:targetActivity=".MainActivity" android:enabled="true" android:exported="true" android:label="Calc" android:icon="@drawable/ic_app">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".LauncherCalendar" android:targetActivity=".MainActivity" android:enabled="false" android:exported="true" android:label="Calendario" android:icon="@drawable/ic_calendar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".LauncherNotes" android:targetActivity=".MainActivity" android:enabled="false" android:exported="true" android:label="Notas" android:icon="@drawable/ic_notes">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".LauncherClock" android:targetActivity=".MainActivity" android:enabled="false" android:exported="true" android:label="Reloj" android:icon="@drawable/ic_clock">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".LauncherConverter" android:targetActivity=".MainActivity" android:enabled="false" android:exported="true" android:label="Conversor" android:icon="@drawable/ic_converter">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.files" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>

@@ -1,6 +1,8 @@
 package dev.veilshare.ui.features
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,28 +48,54 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
     CircularProgressIndicator(); Text(label, style = MaterialTheme.typography.bodyMedium)
 }
 
-@Composable private fun FirstRunScreen(state: RootState.FirstRun, controller: LocalAppController) {
-    var primary by remember { mutableStateOf("") }; var primaryAgain by remember { mutableStateOf("") }
-    var alternate by remember { mutableStateOf("") }; var alternateAgain by remember { mutableStateOf("") }
-    ElevatedCard(Modifier.widthIn(max = 520.dp)) {
-        Column(Modifier.padding(30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text(stringResource(Res.string.setup_label), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-            Text(stringResource(Res.string.setup_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-            Text(stringResource(Res.string.setup_description))
-            HorizontalDivider()
-            Text(stringResource(Res.string.first_code), style = MaterialTheme.typography.titleSmall)
-            SecretField(stringResource(Res.string.code), primary, { primary = it }, !state.busy, ImeAction.Next)
-            SecretField(stringResource(Res.string.confirm_code), primaryAgain, { primaryAgain = it }, !state.busy, ImeAction.Next)
-            Text(stringResource(Res.string.second_code), style = MaterialTheme.typography.titleSmall)
-            SecretField(stringResource(Res.string.code), alternate, { alternate = it }, !state.busy, ImeAction.Next)
-            SecretField(stringResource(Res.string.confirm_code), alternateAgain, { alternateAgain = it }, !state.busy, ImeAction.Done)
-            state.error?.let { InlineError(it) }
-            Button(
-                onClick = {
-                    controller.setup(primary.toCharArray(), primaryAgain.toCharArray(), alternate.toCharArray(), alternateAgain.toCharArray())
-                    primary = ""; primaryAgain = ""; alternate = ""; alternateAgain = ""
-                }, enabled = !state.busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            ) { if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(Res.string.create_spaces)) }
+/** Mandatory first-launch setup; storage state, not a preference, controls whether this is shown. */
+@Composable
+internal fun FirstRunScreen(state: RootState.FirstRun, controller: LocalAppController) {
+    var primary by remember { mutableStateOf("") }
+    var primaryAgain by remember { mutableStateOf("") }
+    var alternate by remember { mutableStateOf("") }
+    var alternateAgain by remember { mutableStateOf("") }
+
+    Surface(Modifier.fillMaxSize().testTag("initial_setup")) {
+        Box(
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding().padding(16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            ElevatedCard(Modifier.widthIn(max = 520.dp).fillMaxWidth()) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()).padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("Calc", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(Res.string.setup_label), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(Res.string.setup_title), style = MaterialTheme.typography.titleLarge)
+                    Text(stringResource(Res.string.setup_description), style = MaterialTheme.typography.bodyMedium)
+                    Text("Elige dos PIN numéricos diferentes de 4 a 16 dígitos. Recomendamos 6 o más.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider()
+                    Text(stringResource(Res.string.first_code), style = MaterialTheme.typography.titleSmall)
+                    SecretField(stringResource(Res.string.code), primary, { primary = it }, !state.busy, ImeAction.Next, Modifier.testTag("setup_primary"))
+                    SecretField(stringResource(Res.string.confirm_code), primaryAgain, { primaryAgain = it }, !state.busy, ImeAction.Next, Modifier.testTag("setup_primary_confirm"))
+                    Text(stringResource(Res.string.second_code), style = MaterialTheme.typography.titleSmall)
+                    SecretField(stringResource(Res.string.code), alternate, { alternate = it }, !state.busy, ImeAction.Next, Modifier.testTag("setup_alternate"))
+                    SecretField(stringResource(Res.string.confirm_code), alternateAgain, { alternateAgain = it }, !state.busy, ImeAction.Done, Modifier.testTag("setup_alternate_confirm"))
+                    state.error?.let { InlineError(it) }
+                    Button(
+                        onClick = {
+                            controller.setup(primary.toCharArray(), primaryAgain.toCharArray(), alternate.toCharArray(), alternateAgain.toCharArray())
+                            primary = ""; primaryAgain = ""; alternate = ""; alternateAgain = ""
+                        },
+                        enabled = !state.busy,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("setup_submit"),
+                    ) {
+                        if (state.busy) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(stringResource(Res.string.create_spaces))
+                        }
+                    }
+                    Text("Para abrir un espacio, escribe su PIN en Calc y pulsa =. Mantén pulsado el título Calc si necesitas el método alternativo.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
@@ -231,9 +259,9 @@ fun FoundationScreen(controller: LocalAppController, windowClass: VeilWindowClas
     }, confirmButton = { TextButton({ controller.changeCredential(code.toCharArray(), confirmation.toCharArray()); code=""; confirmation=""; dismiss() },enabled=code.isNotEmpty()&&confirmation.isNotEmpty()) { Text(stringResource(Res.string.change_code)) } }, dismissButton = { TextButton(dismiss) { Text(stringResource(Res.string.close)) } })
 }
 
-@Composable private fun SecretField(label: String, value: String, change: (String) -> Unit, enabled: Boolean, imeAction: ImeAction) = OutlinedTextField(
+@Composable private fun SecretField(label: String, value: String, change: (String) -> Unit, enabled: Boolean, imeAction: ImeAction, modifier: Modifier = Modifier) = OutlinedTextField(
     value, change, label = { Text(label) }, enabled = enabled, singleLine = true, visualTransformation = PasswordVisualTransformation(),
-    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction=imeAction), modifier = Modifier.fillMaxWidth(),
+    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction=imeAction), modifier = modifier.fillMaxWidth(),
 )
 
 @Composable private fun InlineError(message: String) = Surface(color=MaterialTheme.colorScheme.errorContainer,shape=MaterialTheme.shapes.small) { Text(message,Modifier.fillMaxWidth().padding(12.dp),color=MaterialTheme.colorScheme.onErrorContainer) }

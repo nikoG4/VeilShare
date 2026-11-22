@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 
 class AndroidPlatformSecurityTest {
     private val context=ApplicationProvider.getApplicationContext<Context>()
@@ -39,6 +40,41 @@ class AndroidPlatformSecurityTest {
         val authority="${context.packageName}.files"
         assertTrue(FileProvider.getUriForFile(context,authority,owned).toString().contains("owned_open"))
         assertFailsWith<IllegalArgumentException> { FileProvider.getUriForFile(context,authority,outside) }
+    }
+
+    @Test fun screenCaptureSettingOnlyUnprotectsForegroundAuthenticatedVault() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            scenario.onActivity { activity ->
+                val settings = activity.screenCaptureSettings
+                val original = settings.allowed.value
+                fun secure() = activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0
+                try {
+                    settings.onForegroundChanged(true)
+                    settings.onPrivateSessionChanged(false)
+                    assertTrue(secure())
+                    assertTrue(settings.setAllowed(true))
+                    assertTrue(secure(), "Locked screen must stay secure even if permission is saved")
+                    settings.onPrivateSessionChanged(true)
+                    assertFalse(secure(), "Unlocked vault should permit screenshots when enabled")
+                    assertTrue(settings.setAllowed(false))
+                    assertTrue(secure(), "Turning off screenshot permission must secure immediately")
+                    assertTrue(settings.setAllowed(true))
+                    assertFalse(secure())
+                    settings.onForegroundChanged(false)
+                    assertTrue(secure(), "App in background must be secure")
+                    settings.onForegroundChanged(true)
+                    assertFalse(secure())
+                    settings.onPrivateSessionChanged(false)
+                    assertTrue(secure(), "Locking must restore FLAG_SECURE")
+                    assertEquals(true, AndroidScreenCaptureSettings(activity, activity.window).allowed.value)
+                } finally {
+                    settings.onPrivateSessionChanged(false)
+                    settings.onForegroundChanged(false)
+                    assertTrue(settings.setAllowed(original))
+                    assertTrue(secure())
+                }
+            }
+        }
     }
 
     @Test fun manifestAndWindowKeepTheLocalSurfacePrivate() {

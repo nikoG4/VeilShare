@@ -5,7 +5,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(project(":shared:core-model")); implementation(project(":shared:core-platform")); implementation(project(":shared:core-crypto")); implementation(project(":shared:core-vault")); implementation(project(":shared:ui-design"))
-            implementation(libs.coroutines.core); implementation(compose.runtime); implementation(compose.foundation); implementation(compose.material3); implementation(compose.components.resources)
+            implementation(libs.coroutines.core); implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.1"); implementation(compose.runtime); implementation(compose.foundation); implementation(compose.material3); implementation(compose.components.resources)
         }
         commonTest.dependencies { implementation(libs.kotlin.test); implementation(libs.coroutines.test) }
     }

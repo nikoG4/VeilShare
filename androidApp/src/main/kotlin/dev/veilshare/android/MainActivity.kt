@@ -47,10 +47,12 @@ class MainActivity : FragmentActivity() {
     private val lockSignals = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val externalImportSignals = Channel<Unit>(capacity = Channel.BUFFERED)
     private lateinit var picker: AndroidDocumentPicker
+    internal val screenCaptureSettings by lazy { AndroidScreenCaptureSettings(this, window) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        screenCaptureSettings.onForegroundChanged(false)
         picker = AndroidDocumentPicker(this)
         handleExternalShare(intent)
 
@@ -88,6 +90,8 @@ class MainActivity : FragmentActivity() {
             referenceQr = AndroidReferenceCodeQrProvider(),
             lockSignals = lockSignals,
             externalImportSignals = externalImportSignals.receiveAsFlow(),
+            decoyStore = AndroidDecoyStore(this),
+            screenCaptureSettings = screenCaptureSettings,
         )
         setContent {
             BoxWithConstraints(
@@ -116,6 +120,17 @@ class MainActivity : FragmentActivity() {
         val uri = intent.sharedStreamUri() ?: return
         picker.enqueueExternal(uri)
         externalImportSignals.trySend(Unit)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        screenCaptureSettings.onForegroundChanged(true)
+    }
+
+    override fun onPause() {
+        // Restore privacy before Android creates an app-switcher preview.
+        screenCaptureSettings.onForegroundChanged(false)
+        super.onPause()
     }
 
     override fun onStop() {
