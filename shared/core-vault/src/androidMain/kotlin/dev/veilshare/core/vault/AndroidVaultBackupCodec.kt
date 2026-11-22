@@ -8,6 +8,7 @@ import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -65,12 +66,15 @@ internal object AndroidVaultBackupCodec {
         // path or oversized file must never leave a misleading backup header.
         val rootPath = root.toPath()
         val names = HashSet<String>()
+        val foldedNames = HashSet<String>()
         files.forEach { file ->
             val name = rootPath.relativize(file.toPath()).toString().replace(File.separatorChar, '/')
             require(name != ".veilshare-backup-end" && name != ".veilshare-authenticated-zip.tmp")
             require(name.toByteArray(Charsets.UTF_8).size <= maxNameBytes)
             require(file.length() <= maxEntryBytes)
-            require(names.add(name)) { "Duplicate backup entry" }
+            require(names.add(name) && foldedNames.add(name.lowercase(Locale.ROOT))) {
+                "Duplicate or case-fold-colliding backup entry"
+            }
         }
         val nonce = ByteArray(12).also(random::nextBytes)
         // Validate key and initialize AEAD before writing even the public header.
@@ -148,6 +152,7 @@ internal object AndroidVaultBackupCodec {
         var total = 0L
         var endSeen = false
         val names = HashSet<String>()
+        val foldedNames = HashSet<String>()
         ZipInputStream(authenticatedZip.inputStream().buffered()).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
@@ -156,7 +161,9 @@ internal object AndroidVaultBackupCodec {
                 require(name.toByteArray(Charsets.UTF_8).size <= maxNameBytes)
                 require(!entry.isDirectory && !name.startsWith('/') && !name.contains('\\') &&
                     name.split('/').all { it.isNotEmpty() && it != "." && it != ".." })
-                require(names.add(name)) { "Duplicate backup entry" }
+                require(names.add(name) && foldedNames.add(name.lowercase(Locale.ROOT))) {
+                    "Duplicate or case-fold-colliding backup entry"
+                }
                 if (name == ".veilshare-backup-end") {
                     require(!endSeen && zip.read() == -1)
                     endSeen = true
